@@ -1,4 +1,12 @@
 import pg from 'pg';
+import dotenv from 'dotenv';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Carga el .env de la raiz del repo sin depender del directorio actual.
+dotenv.config({
+  path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.env'),
+});
 
 export function dbClient() {
   return new pg.Client({
