@@ -1,7 +1,7 @@
 // Cuadre Fase 1: recalcula saldos por cliente y por cuenta desde el snapshot
 // crudo de MOVIMIENTOS y los compara contra los saldos publicados en DATA.
 // Solo lectura: no modifica nada.
-import pg from 'pg';
+import { dbClient } from './db.js';
 import { readRange } from './sheets.js';
 
 const TOLERANCE = 0.01; // USD
@@ -20,13 +20,7 @@ async function main() {
     }
   }
 
-  const db = new pg.Client({
-    host: '127.0.0.1',
-    port: Number(process.env.POSTGRES_PORT ?? 5432),
-    database: process.env.POSTGRES_DB ?? 'kw2',
-    user: process.env.POSTGRES_USER ?? 'kw2_app',
-    password: process.env.POSTGRES_PASSWORD,
-  });
+  const db = dbClient();
   await db.connect();
 
   const agg = async (key: string) =>

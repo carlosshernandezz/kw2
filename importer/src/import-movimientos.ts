@@ -2,8 +2,8 @@
 // Estrategia de snapshot: cada corrida reemplaza el snapshot anterior de
 // MOVIMIENTOS (mismo source_type/source_account) y queda registrada en audit_events.
 // No escribe en el Google Sheet.
-import pg from 'pg';
 import { google } from 'googleapis';
+import { dbClient } from './db.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SHEET_ID } from './sheets.js';
@@ -45,13 +45,7 @@ async function main() {
     // Una fila valida tiene fecha numerica y banco o cliente.
     .filter((p) => typeof p.fecha === 'number' && (p.id_banco || p.id_cliente));
 
-  const db = new pg.Client({
-    host: '127.0.0.1',
-    port: Number(process.env.POSTGRES_PORT ?? 5432),
-    database: process.env.POSTGRES_DB ?? 'kw2',
-    user: process.env.POSTGRES_USER ?? 'kw2_app',
-    password: process.env.POSTGRES_PASSWORD,
-  });
+  const db = dbClient();
   await db.connect();
 
   const batchId = `movimientos-${new Date().toISOString()}`;

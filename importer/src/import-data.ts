@@ -1,7 +1,7 @@
 // Importa la hoja DATA del Sheet "2026 KW2" a las tablas clients y accounts.
 // Idempotente: re-ejecutarlo actualiza por legacy_id sin duplicar.
 // No escribe en el Google Sheet.
-import pg from 'pg';
+import { dbClient } from './db.js';
 import { readRange } from './sheets.js';
 
 // Decisiones confirmadas el 12-jun-2026:
@@ -69,13 +69,7 @@ async function main() {
     );
   }
 
-  const db = new pg.Client({
-    host: '127.0.0.1',
-    port: Number(process.env.POSTGRES_PORT ?? 5432),
-    database: process.env.POSTGRES_DB ?? 'kw2',
-    user: process.env.POSTGRES_USER ?? 'kw2_app',
-    password: process.env.POSTGRES_PASSWORD,
-  });
+  const db = dbClient();
   await db.connect();
 
   try {
