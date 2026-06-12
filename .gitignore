@@ -1,0 +1,20 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+build/
+coverage/
+*.log
+
+# Google service account credentials
+google-credentials.json
+kw2-backoffice-*.json
+
+# Local databases, imports and sensitive operational files
+data/
+backups/
+imports/
+secrets/
+
