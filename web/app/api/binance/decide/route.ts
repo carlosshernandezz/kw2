@@ -10,7 +10,8 @@ export async function POST(req: NextRequest) {
     }
     if (body.action === 'confirm' || body.action === 'reject') {
       const ids: number[] = Array.isArray(body.ids) ? body.ids.map(Number) : [];
-      const n = await decide(ids, body.action === 'confirm' ? 'confirmed' : 'rejected');
+      const adjust = body.adjust === 'date' || body.adjust === 'amount' ? body.adjust : null;
+      const n = await decide(ids, body.action === 'confirm' ? 'confirmed' : 'rejected', undefined, adjust);
       return NextResponse.json({ ok: true, changed: n });
     }
     return NextResponse.json({ ok: false, error: 'accion invalida' }, { status: 400 });

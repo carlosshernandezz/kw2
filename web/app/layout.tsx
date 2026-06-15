@@ -18,10 +18,16 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                 Inicio
               </a>
               <a
-                className="rounded-md bg-slate-100 px-3 py-2 font-medium text-slate-900"
+                className="rounded-md px-3 py-2 font-medium text-slate-700 hover:bg-slate-100"
                 href="/conciliacion/binance"
               >
                 Conciliación Binance
+              </a>
+              <a
+                className="rounded-md px-3 py-2 font-medium text-slate-700 hover:bg-slate-100"
+                href="/correcciones"
+              >
+                Cambios para la hoja
               </a>
               <span className="px-3 pt-4 text-xs font-semibold uppercase tracking-wide text-slate-400">
                 Próximamente

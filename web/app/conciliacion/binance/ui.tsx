@@ -27,13 +27,13 @@ export default function BinanceClient({
     setSelected(new Set());
   }
 
-  async function act(action: string, ids?: number[]) {
+  async function act(action: string, ids?: number[], adjust?: 'date' | 'amount') {
     setBusy(true);
     try {
       await fetch('/api/binance/decide', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action, ids }),
+        body: JSON.stringify({ action, ids, adjust }),
       });
       await refresh();
     } finally {
@@ -142,7 +142,7 @@ export default function BinanceClient({
                   <div className="text-xs text-slate-500">{r.statement.date} · {r.statement.operation}</div>
                 </td>
                 <td className="px-3 py-2 text-xs text-slate-500">{r.reason}</td>
-                <td className="px-3 py-2 text-right">
+                <td className="px-3 py-2 text-right whitespace-nowrap">
                   <button
                     disabled={busy}
                     onClick={() => act('confirm', [r.id])}
@@ -150,6 +150,16 @@ export default function BinanceClient({
                   >
                     Confirmar
                   </button>
+                  {r.ledger.date !== r.statement.date && (
+                    <button
+                      disabled={busy}
+                      onClick={() => act('confirm', [r.id], 'date')}
+                      title={`Confirmar y proponer cambiar la fecha en MOVIMIENTOS a ${r.statement.date}`}
+                      className="mr-2 text-xs font-medium text-sky-600 hover:underline disabled:opacity-40"
+                    >
+                      + corregir fecha → {r.statement.date}
+                    </button>
+                  )}
                   <button
                     disabled={busy}
                     onClick={() => act('reject', [r.id])}

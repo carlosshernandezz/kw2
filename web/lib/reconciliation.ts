@@ -1,6 +1,7 @@
 // Logica de conciliacion BINANCE CH compartida por las pantallas y la API.
 // Equivalente a importer/src/confirm-binance.ts pero para la app web.
 import { pool } from './db';
+import { createCorrectionForRecon } from './corrections';
 
 const ACTOR_DEFAULT = 'app_web';
 const TOL = 0.02;
@@ -85,7 +86,10 @@ async function recomputeStatus(client: any, movementIds: number[]) {
   }
 }
 
-export async function decide(ids: number[], status: 'confirmed' | 'rejected', actor = ACTOR_DEFAULT): Promise<number> {
+export async function decide(
+  ids: number[], status: 'confirmed' | 'rejected', actor = ACTOR_DEFAULT,
+  adjust?: 'date' | 'amount' | null,
+): Promise<number> {
   if (ids.length === 0) return 0;
   const client = await pool.connect();
   try {
@@ -101,6 +105,11 @@ export async function decide(ids: number[], status: 'confirmed' | 'rejected', ac
     const changed = upd.rows.map((r: any) => r.id);
     const movements = [...new Set(upd.rows.map((r: any) => r.fund_movement_id))] as number[];
     await recomputeStatus(client, movements);
+
+    // Al confirmar una sola sugerencia se puede pedir un cambio en la hoja.
+    if (adjust && status === 'confirmed' && changed.length === 1) {
+      await createCorrectionForRecon(client, changed[0], adjust, actor);
+    }
     await client.query(
       `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state)
        VALUES ('user', $1, $2, 'reconciliation', 'BINANCE CH', $3)`,
