@@ -160,6 +160,16 @@ export default function BinanceClient({
                       + corregir fecha → {r.statement.date}
                     </button>
                   )}
+                  {r.oneToOne && Number(r.ledger.amount) !== Number(r.statement.amount) && (
+                    <button
+                      disabled={busy}
+                      onClick={() => act('confirm', [r.id], 'amount')}
+                      title={`Confirmar y proponer cambiar el monto en MOVIMIENTOS a ${fmt(r.statement.amount)}`}
+                      className="mr-2 text-xs font-medium text-sky-600 hover:underline disabled:opacity-40"
+                    >
+                      + corregir monto → {fmt(r.statement.amount)}
+                    </button>
+                  )}
                   <button
                     disabled={busy}
                     onClick={() => act('reject', [r.id])}

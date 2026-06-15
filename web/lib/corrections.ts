@@ -23,7 +23,8 @@ export async function createCorrectionForRecon(
 ): Promise<number> {
   const r = (
     await client.query(
-      `SELECT fm.id fmid, (fm.source_payload->>'row_number')::int rn, fm.effective_at::date::text lf,
+      `SELECT fm.id fmid, rc.external_transaction_id etid,
+              (fm.source_payload->>'row_number')::int rn, fm.effective_at::date::text lf,
               fm.direction, fm.usd_amount::text lamt,
               fm.source_payload->>'banco' banco, fm.source_payload->>'nombre' nombre,
               fm.source_payload->>'operacion' operacion,
@@ -45,6 +46,16 @@ export async function createCorrectionForRecon(
     proposed = r.ef;
     reason = 'Alinear la fecha del libro a la del estado de cuenta de Binance';
   } else {
+    // El monto solo puede corregirse en matches 1:1; en divididos el monto del
+    // estado de cuenta es el total y proponerlo aqui descuadraria.
+    const counts = (
+      await client.query(
+        `SELECT (SELECT count(*) FROM reconciliations WHERE fund_movement_id=$1 AND status<>'rejected') fm_cnt,
+                (SELECT count(*) FROM reconciliations WHERE external_transaction_id=$2 AND status<>'rejected') et_cnt`,
+        [r.fmid, r.etid],
+      )
+    ).rows[0];
+    if (Number(counts.fm_cnt) > 1 || Number(counts.et_cnt) > 1) return 0;
     if (Math.abs(Number(r.lamt) - Number(r.eamt)) < 0.005) return 0;
     column = r.direction === 'inflow' ? 'Monto Credito' : 'Monto Debito';
     current = r.direction === 'inflow' ? r.lamt : String(-Math.abs(Number(r.lamt)));

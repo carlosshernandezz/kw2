@@ -11,6 +11,7 @@ export type Suggestion = {
   confidence: number;
   reason: string;
   alloc: string;
+  oneToOne: boolean;
   ledger: { date: string; direction: string; amount: string; nombre: string | null };
   statement: { date: string; operation: string; amount: string; remark: string | null };
 };
@@ -53,7 +54,9 @@ export async function listSuggestions(onlyDubious = false): Promise<Suggestion[]
     `SELECT r.id, r.confidence::float8 confidence, r.reasons->>0 reason, r.allocated_native_amount::text alloc,
             fm.effective_at::date::text lf, fm.direction ld, fm.usd_amount::text lmonto, fm.source_payload->>'nombre' nombre,
             (et.effective_at AT TIME ZONE 'America/Caracas')::date::text ef, et.raw_payload->>'operation' eop,
-            et.native_amount::text emonto, et.raw_payload->>'remark' remark
+            et.native_amount::text emonto, et.raw_payload->>'remark' remark,
+            ((SELECT count(*) FROM reconciliations x WHERE x.fund_movement_id=fm.id AND x.status<>'rejected')=1
+             AND (SELECT count(*) FROM reconciliations x WHERE x.external_transaction_id=et.id AND x.status<>'rejected')=1) one_to_one
      FROM reconciliations r
      JOIN fund_movements fm ON fm.id=r.fund_movement_id
      JOIN external_transactions et ON et.id=r.external_transaction_id
@@ -66,6 +69,7 @@ export async function listSuggestions(onlyDubious = false): Promise<Suggestion[]
     confidence: r.confidence,
     reason: r.reason,
     alloc: r.alloc,
+    oneToOne: r.one_to_one,
     ledger: { date: r.lf, direction: r.ld, amount: r.lmonto, nombre: r.nombre },
     statement: { date: r.ef, operation: r.eop, amount: r.emonto, remark: r.remark },
   }));
