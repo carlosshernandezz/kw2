@@ -17,6 +17,12 @@ const EXCLUDED_OPERATIONS = new Set([
   'transfer between spot account and um futures account',
   'transfer funds to spot',
   'transfer funds to funding wallet',
+  // Confirmado 15-jun-2026: nombres reales del export que son movimientos
+  // internos entre billeteras propias o rendimiento de Binance Earn.
+  'transfer between spot and funding',
+  'transfer between spot and um futures',
+  'simple earn flexible subscription',
+  'simple earn flexible interest',
 ]);
 
 const BINANCE_LOAN_OPERATIONS = new Set([
