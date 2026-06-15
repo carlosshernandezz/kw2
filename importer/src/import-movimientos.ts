@@ -13,7 +13,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const COLUMNS = [
   'fecha', 'semana', 'type', 'id_banco', 'banco', 'id_cliente', 'nombre', 'tipo',
   'monto_credito', 'monto_debito', 'porcentaje', 'emisor_beneficiario', 'tasa',
-  'monto_bs', 'operacion', 'x', 'conciliacion', 'alerta_banco',
+  'monto_bs', 'operacion', 'x', 'conciliacion', 'alerta_banco', 'kw2_id',
 ] as const;
 
 // Serial de Google Sheets -> fecha (dias desde 1899-12-30).
@@ -30,7 +30,7 @@ async function main() {
   const sheets = google.sheets({ version: 'v4', auth });
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: "'MOVIMIENTOS'!A2:R100000",
+    range: "'MOVIMIENTOS'!A2:S100000",
     valueRenderOption: 'UNFORMATTED_VALUE',
     dateTimeRenderOption: 'SERIAL_NUMBER',
   });

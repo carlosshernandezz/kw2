@@ -59,6 +59,15 @@ Este documento existe para retomar el trabajo desde cualquier maquina o sesion n
 
 Las sugerencias automaticas de baja confianza (0.75 fecha lejana, 0.80 por suma) son poco confiables: Carlos reviso varias y estaban mal (suma aritmeticamente valida pero economicamente falsa, p.ej. Andres-100 metido en un grupo de 400; BitHash 200 vs Jochiwi). Solo las 0.99 (monto+fecha exactos) son solidas para confirmar en bloque. El resto va por conciliacion manual.
 
+## ID estable y reimport seguro (LISTO)
+
+- Cada fila de MOVIMIENTOS tiene un `kw2_id` opaco y estable (ej. KW2-7FH3K9Q), asignado por un Apps Script dentro del Sheet (infra/apps-script/kw2-id.gs) con triggers "On change" + time-driven. La cuenta de servicio sigue siendo solo lectura. Backup del Sheet creado antes del cambio.
+- `import-movimientos.ts` ahora captura la columna kw2_id (S).
+- migracion 006: `fund_movements.kw2_id` + indice unico parcial. Los 14.503 movimientos quedaron anclados a su kw2_id (puente por row_number, 1:1, sin duplicados).
+- `reimport-movimientos.ts` = reimport SEGURO (reemplaza el viejo transform delete+recreate): upsert por kw2_id. Inserta filas nuevas, actualiza las cambiadas conservando ID y conciliaciones, marca 'voided' las borradas del Sheet, y deja 'needs_review' las conciliaciones que ya no cuadran tras una edicion. Verificado: 372/372 y 17/17, conciliaciones intactas.
+- Cadena de refresco nueva: import-data -> import-movimientos -> reimport-movimientos -> verify-model. (transform-movimientos.ts queda obsoleto.)
+- Fees de Binance Pay: el 0,01 va como fila aparte con la misma referencia; se ligan al envio principal (fix-binance-fees.ts), MOVIMIENTOS no se baja.
+
 ## Siguiente Paso Acordado
 
 Motor de matching para conciliar BINANCE CH: cruzar las transacciones relevantes del estado de cuenta oficial (external_transactions, source_type binance_statement, payload->relevant = true) contra fund_movements de la cuenta BINANCE CH por fecha/monto/referencia, generando sugerencias con confianza en `reconciliations` (status suggested) para aprobacion humana. Objetivos del usuario: conciliar clientes no cuadrados, BINANCE CH, y el ano pasado (misma estructura).
