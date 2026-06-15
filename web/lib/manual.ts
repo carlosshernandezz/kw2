@@ -87,22 +87,32 @@ export async function unmatchedStatement(): Promise<StmtRow[]> {
 }
 
 // Conciliacion manual: une un conjunto de filas del libro con uno del estado de
-// cuenta. Se exige que un lado sea exactamente una fila (1:1, N:1 o 1:N) y que
-// los totales coincidan. Crea reconciliations 'confirmed'.
-export async function manualMatch(ledgerIds: number[], stmtIds: number[], actor = ACTOR): Promise<{ ok: boolean; error?: string }> {
+// cuenta. Un lado debe ser exactamente una fila (1:1, N:1 o 1:N).
+// - Si los totales coinciden (<= TOL): concilia directo.
+// - Si difieren y adjustAmount=true y el lado del libro es UNA fila: concilia y
+//   genera una correccion para actualizar el monto del libro al del estado.
+export async function manualMatch(
+  ledgerIds: number[], stmtIds: number[], opts: { adjustAmount?: boolean } = {}, actor = ACTOR,
+): Promise<{ ok: boolean; error?: string }> {
   if (ledgerIds.length === 0 || stmtIds.length === 0) return { ok: false, error: 'Selecciona filas en ambos lados.' };
   if (ledgerIds.length > 1 && stmtIds.length > 1) return { ok: false, error: 'Un lado debe ser una sola fila (1:1, varias→1 o 1→varias).' };
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const led = (await client.query(`SELECT id, usd_amount::float8 amt, direction FROM fund_movements WHERE id=ANY($1)`, [ledgerIds])).rows;
+    const led = (await client.query(`SELECT id, usd_amount::float8 amt, direction, source_payload, effective_at::date::text fecha FROM fund_movements WHERE id=ANY($1)`, [ledgerIds])).rows;
     const stm = (await client.query(`SELECT id, native_amount::float8 amt, direction FROM external_transactions WHERE id=ANY($1)`, [stmtIds])).rows;
     const sumL = led.reduce((a, r) => a + r.amt, 0);
     const sumS = stm.reduce((a, r) => a + r.amt, 0);
-    if (Math.abs(sumL - sumS) > TOL) {
+    const diff = Math.abs(sumL - sumS);
+    const adjust = diff > TOL;
+    if (adjust && !opts.adjustAmount) {
       await client.query('ROLLBACK');
       return { ok: false, error: `Los totales no coinciden: libro ${sumL.toFixed(2)} vs estado ${sumS.toFixed(2)}.` };
+    }
+    if (adjust && ledgerIds.length !== 1) {
+      await client.query('ROLLBACK');
+      return { ok: false, error: 'Para corregir el monto, el lado del libro debe ser una sola fila.' };
     }
     const dirsL = new Set(led.map((r) => r.direction));
     const dirsS = new Set(stm.map((r) => r.direction));
@@ -132,10 +142,29 @@ export async function manualMatch(ledgerIds: number[], stmtIds: number[], actor 
         [id, TOL],
       );
     }
+    // Diferencia de monto: corregir el monto del libro al total del estado.
+    if (adjust) {
+      const l = led[0];
+      const p = l.source_payload ?? {};
+      const column = l.direction === 'inflow' ? 'Monto Credito' : 'Monto Debito';
+      const current = l.direction === 'inflow' ? l.amt.toFixed(2) : (-Math.abs(l.amt)).toFixed(2);
+      const proposed = l.direction === 'inflow' ? sumS.toFixed(2) : (-Math.abs(sumS)).toFixed(2);
+      const locator = {
+        row_number: p.row_number ?? null, fecha: l.fecha, banco: p.banco ?? null,
+        nombre: p.nombre ?? null, monto: l.amt, operacion: p.operacion ?? null,
+      };
+      await client.query(
+        `INSERT INTO sheet_corrections (sheet, kind, source_row_number, fund_movement_id, column_name, current_value, proposed_value, locator, reason, created_by)
+         VALUES ('MOVIMIENTOS','update',$1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (sheet, source_row_number, column_name, status) DO NOTHING`,
+        [p.row_number ?? null, l.id, column, current, proposed, JSON.stringify(locator),
+         'Conciliación manual: ajustar el monto del libro al total del estado de cuenta de Binance', actor],
+      );
+    }
     await client.query(
       `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state)
        VALUES ('user',$1,'manual_reconcile','account','BINANCE CH',$2)`,
-      [actor, JSON.stringify({ ledgerIds, stmtIds })],
+      [actor, JSON.stringify({ ledgerIds, stmtIds, adjustAmount: adjust, sumL, sumS })],
     );
     await client.query('COMMIT');
     return { ok: true };

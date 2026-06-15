@@ -31,7 +31,11 @@ export default function ManualClient({
 
   const sumL = [...selL].reduce((a, id) => a + Number(ledger.find((r) => r.id === id)?.amount ?? 0), 0);
   const sumS = [...selS].reduce((a, id) => a + Number(statement.find((r) => r.id === id)?.amount ?? 0), 0);
-  const matchReady = selL.size > 0 && selS.size > 0 && (selL.size === 1 || selS.size === 1) && Math.abs(sumL - sumS) <= 0.02;
+  const diff = Math.round((sumS - sumL) * 100) / 100;
+  const structureOk = selL.size > 0 && selS.size > 0 && (selL.size === 1 || selS.size === 1);
+  const matchReady = structureOk && Math.abs(diff) <= 0.02;
+  // Diferencia de monto: solo se puede ajustar si el lado del libro es una fila.
+  const adjustReady = structureOk && Math.abs(diff) > 0.02 && selL.size === 1;
 
   async function refresh() {
     const r = await fetch('/api/binance/manual', { cache: 'no-store' });
@@ -64,11 +68,21 @@ export default function ManualClient({
       <div className="sticky top-0 z-10 mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white p-3">
         <span className="text-sm text-slate-500">
           Libro: <b>{fmt(String(sumL))}</b> ({selL.size}) · Estado: <b>{fmt(String(sumS))}</b> ({selS.size})
+          {structureOk && Math.abs(diff) > 0.02 && (
+            <span className="ml-1 text-amber-600">· dif {diff > 0 ? '+' : ''}{fmt(String(diff))}</span>
+          )}
         </span>
         <button disabled={busy || !matchReady} onClick={() => post({ action: 'match', ledgerIds: [...selL], stmtIds: [...selS] })}
           className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-40">
           Conciliar seleccionadas
         </button>
+        {adjustReady && (
+          <button disabled={busy} onClick={() => post({ action: 'match', ledgerIds: [...selL], stmtIds: [...selS], adjustAmount: true })}
+            title={`Concilia y propone cambiar el monto del libro a ${fmt(String(sumS))} en MOVIMIENTOS`}
+            className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-40">
+            Conciliar y corregir monto → {fmt(String(sumS))}
+          </button>
+        )}
         <button disabled={busy || selL.size === 0} onClick={() => post({ action: 'mark-ledger-no-counterpart', ledgerIds: [...selL] })}
           className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40">
           Libro: sin contraparte

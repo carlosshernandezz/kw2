@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
   const stmtIds: number[] = Array.isArray(body.stmtIds) ? body.stmtIds.map(Number) : [];
   try {
     if (body.action === 'match') {
-      const r = await manualMatch(ledgerIds, stmtIds);
+      const r = await manualMatch(ledgerIds, stmtIds, { adjustAmount: body.adjustAmount === true });
       return NextResponse.json(r, { status: r.ok ? 200 : 400 });
     }
     if (body.action === 'mark-ledger-no-counterpart') {
