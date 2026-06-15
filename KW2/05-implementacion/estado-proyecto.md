@@ -41,6 +41,24 @@ Este documento existe para retomar el trabajo desde cualquier maquina o sesion n
 - Estado al 15-jun-2026: 1271 reconciliaciones confirmed (confianza 0.99), 115 suggested por revisar (<0.99, mezcla de fecha +-1/3 dias y divididos, todas con suma integra). 131 movimientos del libro y ~842 filas del estado de cuenta sin pareja (montos grandes / agregados / diciembre 2025 = año pasado).
 - Integridad verificada: ningun match por suma descuadra (tolerancia 0.02).
 
+## App web (Next.js en web/)
+
+- Pantalla de conciliación BINANCE CH (`/conciliacion/binance`): confirmar/rechazar sugerencias, confirmar 0.99 en bloque, y botones "+ corregir fecha/monto" que generan cambios para la hoja.
+- Conciliación manual (`/conciliacion/binance/manual`): dos paneles (libro vs estado de cuenta sin conciliar). Acciones: match manual 1:1 / N:1 / 1:N (valida totales y direccion), "Libro: sin contraparte" (mov. del libro no esta en el estado de cuenta) y "Estado: falta en MOVIMIENTOS" (crea correccion add_row para agregar la fila).
+- Cambios para la hoja (`/correcciones`): worklist de correcciones (update / add_row / split) para aplicar a mano en el Sheet. El sistema nunca escribe en el Sheet.
+- Sin login (localhost, actor app_web). Corre con `cd web && npm run dev`.
+
+## Modelo de conciliacion (tablas)
+
+- reconciliations: sugerencias y confirmaciones (suggested/confirmed/rejected). Manual = confidence 1.0, reasons ["conciliación manual"].
+- sheet_corrections (migr. 004, +kind en 005): cambios propuestos a MOVIMIENTOS (update/add_row/split).
+- reconciliation_marks (migr. 005): discrepancias 'no_statement_counterpart' (libro sin contraparte) y 'missing_in_sheet' (falta en la hoja).
+- Migraciones aplicadas: 001-005.
+
+## Aprendizaje clave de conciliacion Binance
+
+Las sugerencias automaticas de baja confianza (0.75 fecha lejana, 0.80 por suma) son poco confiables: Carlos reviso varias y estaban mal (suma aritmeticamente valida pero economicamente falsa, p.ej. Andres-100 metido en un grupo de 400; BitHash 200 vs Jochiwi). Solo las 0.99 (monto+fecha exactos) son solidas para confirmar en bloque. El resto va por conciliacion manual.
+
 ## Siguiente Paso Acordado
 
 Motor de matching para conciliar BINANCE CH: cruzar las transacciones relevantes del estado de cuenta oficial (external_transactions, source_type binance_statement, payload->relevant = true) contra fund_movements de la cuenta BINANCE CH por fecha/monto/referencia, generando sugerencias con confianza en `reconciliations` (status suggested) para aprobacion humana. Objetivos del usuario: conciliar clientes no cuadrados, BINANCE CH, y el ano pasado (misma estructura).

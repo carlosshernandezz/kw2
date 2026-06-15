@@ -25,6 +25,12 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
               </a>
               <a
                 className="rounded-md px-3 py-2 font-medium text-slate-700 hover:bg-slate-100"
+                href="/conciliacion/binance/manual"
+              >
+                Conciliación manual
+              </a>
+              <a
+                className="rounded-md px-3 py-2 font-medium text-slate-700 hover:bg-slate-100"
                 href="/correcciones"
               >
                 Cambios para la hoja
