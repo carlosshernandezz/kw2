@@ -33,6 +33,14 @@ Este documento existe para retomar el trabajo desde cualquier maquina o sesion n
 - Secretos (`.env`, `google-credentials.json`): a mano, nunca por Git.
 - Base de datos: pg_dump/restore (las decisiones en base — alias, conciliaciones, auditoria — no son reproducibles desde el Sheet). Futuro: Tailscale cuando la Mac mini quede fija.
 
+## Conciliacion BINANCE CH (en curso)
+
+- `match-binance.ts`: cruza fund_movements de BINANCE CH contra el estado de cuenta relevante. 1:1 exacto, 1:1 con tolerancia de fee (<=0.02), y por suma (divididos en ambos sentidos). Genera reconciliations status 'suggested'. Regenera las 'suggested' sin tocar confirmed/rejected.
+- `report-binance.ts`: resumen + pendientes a revisar.
+- `confirm-binance.ts`: aprobacion humana. Subcomandos: `confirm-high` (confirma confianza >=0.99), `review` (lista dudosas <0.99), `confirm <id...>`, `reject <id...>`. Al confirmar recalcula fund_movements.status (reconciled/partially) y audita.
+- Estado al 15-jun-2026: 1271 reconciliaciones confirmed (confianza 0.99), 115 suggested por revisar (<0.99, mezcla de fecha +-1/3 dias y divididos, todas con suma integra). 131 movimientos del libro y ~842 filas del estado de cuenta sin pareja (montos grandes / agregados / diciembre 2025 = año pasado).
+- Integridad verificada: ningun match por suma descuadra (tolerancia 0.02).
+
 ## Siguiente Paso Acordado
 
 Motor de matching para conciliar BINANCE CH: cruzar las transacciones relevantes del estado de cuenta oficial (external_transactions, source_type binance_statement, payload->relevant = true) contra fund_movements de la cuenta BINANCE CH por fecha/monto/referencia, generando sugerencias con confianza en `reconciliations` (status suggested) para aprobacion humana. Objetivos del usuario: conciliar clientes no cuadrados, BINANCE CH, y el ano pasado (misma estructura).
