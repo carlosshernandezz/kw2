@@ -17,8 +17,8 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 const dayDiff = (a: string, b: string) => Math.abs((Date.parse(a) - Date.parse(b)) / 86400000);
 const FEE_EPS = 0.02;
 
-type Ledger = { id: number; date: string; direction: string; amount: number };
-type Stmt = { id: number; date: string; direction: string; amount: number };
+type Ledger = { id: number; date: string; direction: string; amount: number; nombre: string };
+type Stmt = { id: number; date: string; direction: string; amount: number; operation: string };
 type Match = { ledgerId: number; stmtId: number; amount: number; confidence: number; reason: string };
 
 // 1:1: pasadas de confianza decreciente.
@@ -63,7 +63,8 @@ async function main() {
   );
 
   const ledgerRes = await db.query(
-    `SELECT fm.id, fm.effective_at::date::text AS date, fm.direction, fm.usd_amount::float8 AS amount
+    `SELECT fm.id, fm.effective_at::date::text AS date, fm.direction, fm.usd_amount::float8 AS amount,
+            COALESCE(fm.source_payload->>'nombre','') AS nombre
      FROM fund_movements fm
      WHERE fm.account_id=$1 AND fm.status<>'voided'
        AND NOT EXISTS (SELECT 1 FROM reconciliations r WHERE r.fund_movement_id=fm.id AND r.status<>'rejected')`,
@@ -71,7 +72,8 @@ async function main() {
   );
   const stmtRes = await db.query(
     `SELECT et.id, (et.effective_at AT TIME ZONE 'America/Caracas')::date::text AS date,
-            et.direction, et.native_amount::float8 AS amount
+            et.direction, et.native_amount::float8 AS amount,
+            COALESCE(et.raw_payload->>'operation','') AS operation
      FROM external_transactions et
      WHERE et.source_type='binance_statement' AND et.source_account='BINANCE CH'
        AND (et.raw_payload->>'relevant')::boolean
@@ -98,6 +100,38 @@ async function main() {
       if (best) {
         usedLedger.add(l.id); usedStmt.add(best.id);
         matches.push({ ledgerId: l.id, stmtId: best.id, amount: l.amount, confidence: pass.confidence, reason: pass.reason });
+      }
+    }
+  }
+
+  // --- Fase 1.5: P2P del dia completo ---
+  // Caso seguro (sin riesgo de falsos positivos por subconjuntos): cuando hay
+  // exactamente UN movimiento del libro 'Binance P2P' sin conciliar en un dia,
+  // y la suma de TODAS las P2P Trading del estado de cuenta de ese dia y misma
+  // direccion (todas, no un subconjunto) coincide con su monto.
+  const isLedgerP2P = (l: Ledger) => l.nombre.toLowerCase().includes('binance p2p');
+  const isStmtP2P = (s: Stmt) => s.operation.toLowerCase() === 'p2p trading';
+  const dayKey = (date: string, dir: string) => `${date}|${dir}`;
+
+  const ledgerP2PByDay = new Map<string, Ledger[]>();
+  for (const l of ledger) {
+    if (usedLedger.has(l.id) || !isLedgerP2P(l)) continue;
+    const k = dayKey(l.date, l.direction);
+    (ledgerP2PByDay.get(k) ?? ledgerP2PByDay.set(k, []).get(k)!).push(l);
+  }
+  for (const [k, ls] of ledgerP2PByDay) {
+    if (ls.length !== 1) continue; // ambiguo: mas de un movimiento del libro ese dia
+    const l = ls[0];
+    const [date, dir] = k.split('|');
+    const dayStmt = stmt.filter((s) => !usedStmt.has(s.id) && isStmtP2P(s) && s.date === date && s.direction === dir);
+    if (dayStmt.length < 2) continue; // si es 1 ya lo cubrio la fase 1:1
+    const sum = round2(dayStmt.reduce((a, s) => a + s.amount, 0));
+    if (Math.abs(sum - l.amount) <= FEE_EPS) {
+      usedLedger.add(l.id);
+      for (const s of dayStmt) {
+        usedStmt.add(s.id);
+        matches.push({ ledgerId: l.id, stmtId: s.id, amount: s.amount, confidence: 0.9,
+          reason: `P2P del dia completo: ${dayStmt.length} ordenes del estado de cuenta suman el movimiento del libro` });
       }
     }
   }

@@ -9,6 +9,51 @@ const TOL = 0.02;
 export type LedgerRow = { id: number; date: string; direction: string; amount: string; nombre: string | null; row: number | null };
 export type StmtRow = { id: number; date: string; direction: string; amount: string; operation: string; remark: string | null };
 
+export type ReconciledRow = {
+  id: number; date: string; direction: string; amount: string; nombre: string | null;
+  nOps: number; confidence: number | null; manual: boolean;
+};
+export type MarkRow = { id: number; type: string; mark: string; date: string; amount: string; label: string };
+
+// Movimientos del libro ya conciliados (confirmados), con cuantas ops del estado los cubren.
+export async function reconciledLedger(): Promise<ReconciledRow[]> {
+  const accId = await accountId();
+  const r = await pool.query(
+    `SELECT fm.id, fm.effective_at::date::text date, fm.direction, fm.usd_amount::text amount,
+            fm.source_payload->>'nombre' nombre,
+            count(r.id)::int n_ops, min(r.confidence)::float8 conf,
+            bool_or(r.reasons @> '["conciliación manual"]') manual
+     FROM fund_movements fm
+     JOIN reconciliations r ON r.fund_movement_id=fm.id AND r.status='confirmed'
+     WHERE fm.account_id=$1
+     GROUP BY fm.id, fm.effective_at, fm.direction, fm.usd_amount, fm.source_payload->>'nombre'
+     ORDER BY fm.effective_at DESC, fm.usd_amount DESC`,
+    [accId],
+  );
+  return r.rows.map((x: any) => ({
+    id: x.id, date: x.date, direction: x.direction, amount: x.amount, nombre: x.nombre,
+    nOps: x.n_ops, confidence: x.conf, manual: x.manual,
+  }));
+}
+
+// Discrepancias marcadas (libro sin contraparte / estado falta en hoja).
+export async function marks(): Promise<MarkRow[]> {
+  const r = await pool.query(
+    `SELECT m.id, m.entity_type, m.mark,
+            CASE WHEN m.entity_type='fund_movement' THEN fm.effective_at::date::text
+                 ELSE (et.effective_at AT TIME ZONE 'America/Caracas')::date::text END date,
+            CASE WHEN m.entity_type='fund_movement' THEN fm.usd_amount::text ELSE et.native_amount::text END amount,
+            CASE WHEN m.entity_type='fund_movement' THEN fm.source_payload->>'nombre'
+                 ELSE et.raw_payload->>'operation' END label
+     FROM reconciliation_marks m
+     LEFT JOIN fund_movements fm ON m.entity_type='fund_movement' AND fm.id=m.entity_id
+     LEFT JOIN external_transactions et ON m.entity_type='external_transaction' AND et.id=m.entity_id
+     WHERE m.status='active'
+     ORDER BY m.created_at DESC`,
+  );
+  return r.rows.map((x: any) => ({ id: x.id, type: x.entity_type, mark: x.mark, date: x.date, amount: x.amount, label: x.label }));
+}
+
 // Movimientos del libro sin conciliar y sin marca de discrepancia.
 export async function unmatchedLedger(): Promise<LedgerRow[]> {
   const accId = await accountId();
