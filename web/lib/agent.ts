@@ -1,7 +1,8 @@
 // Agente local de solo lectura (Nivel 1). Usa el modelo local (Ollama, qwen3)
 // SOLO como interfaz: interpreta la pregunta, llama herramientas deterministas
 // y redacta la respuesta. Nunca inventa cifras; todo numero viene de las tools.
-import { findClients, clientDetail, unreconciledBinance, unidentifiedZelle, utilidadMesa, topBalances } from './agent-tools';
+import { findClients, clientDetail, unreconciledBinance, unidentifiedZelle, utilidadMesa, topBalances, utilidadMes, estadoConciliacion, buscarDuplicados } from './agent-tools';
+import { needsReview } from './manual';
 
 const OLLAMA = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
 const MODEL = process.env.KW2_AGENT_MODEL ?? 'qwen3:8b';
@@ -62,6 +63,33 @@ const tools = [
       parameters: { type: 'object', properties: {} },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'utilidad_mes',
+      description: 'Utilidad (comisiones − gastos) de un mes específico. Úsala para "utilidad de junio", "¿cuánto ganamos el mes pasado?". Si no se da mes, usa el más reciente.',
+      parameters: {
+        type: 'object',
+        properties: { anio: { type: 'integer', description: 'año, ej. 2026' }, mes: { type: 'integer', description: 'mes 1-12' } },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'estado_conciliacion',
+      description: 'Resumen de conciliación de BINANCE CH: cuántos movimientos están conciliados, el porcentaje y el detalle de reconciliaciones. Úsala para "¿cómo va la conciliación?", "detalle de conciliación".',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'buscar_duplicados',
+      description: 'Busca posibles movimientos duplicados (misma fecha, cliente, cuenta, dirección y monto). Úsala para "¿hay duplicados?", "busca movimientos repetidos".',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
 ];
 
 async function runTool(name: string, args: any): Promise<unknown> {
@@ -91,6 +119,9 @@ async function runTool(name: string, args: any): Promise<unknown> {
   if (name === 'zelles_sin_identificar') return await unidentifiedZelle();
   if (name === 'utilidad_mesa') return await utilidadMesa();
   if (name === 'top_deudores_acreedores') return await topBalances(10);
+  if (name === 'utilidad_mes') return await utilidadMes(args?.anio ? Number(args.anio) : undefined, args?.mes ? Number(args.mes) : undefined);
+  if (name === 'estado_conciliacion') return await estadoConciliacion();
+  if (name === 'buscar_duplicados') return await buscarDuplicados(30);
   return { error: `herramienta desconocida: ${name}` };
 }
 
@@ -130,4 +161,35 @@ export async function askAgent(question: string): Promise<AgentResult> {
     return { answer: stripThink(msg?.content ?? ''), toolCalls };
   }
   return { answer: 'No pude completar la consulta (demasiados pasos).', toolCalls };
+}
+
+// --- Modo razonamiento (DeepSeek-R1) ---
+// Junta los datos de posibles problemas y pide a un modelo de razonamiento que
+// los analice, distinguiendo errores reales de casos normales. No usa tools:
+// la data se pre-consulta de forma determinista y se le entrega.
+const REASONING_MODEL = process.env.KW2_REASONING_MODEL ?? 'deepseek-r1:8b';
+
+const REASONING_SYSTEM = `Eres un auditor financiero de la mesa de cambio KW2. Te doy datos ya consultados (posibles duplicados, conciliaciones que no cuadran, estado de conciliación). Analiza con cuidado y distingue POSIBLES ERRORES REALES de casos normales (ej.: un cliente puede tener varios pagos idénticos legítimos el mismo día; un pago de nómina dividido genera montos iguales; un fee de Binance Pay es 0,01 aparte). Responde en español, conciso, con una lista priorizada de qué conviene revisar y por qué. NO inventes datos fuera de los provistos.`;
+
+export async function askReasoning(question: string): Promise<{ answer: string; context: unknown }> {
+  const [dups, estado, review] = await Promise.all([buscarDuplicados(40), estadoConciliacion(), needsReview()]);
+  const context = { posibles_duplicados: dups, estado_conciliacion: estado, conciliaciones_que_no_cuadran: review };
+
+  const res = await fetch(`${OLLAMA}/api/chat`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: REASONING_MODEL,
+      messages: [
+        { role: 'system', content: REASONING_SYSTEM },
+        { role: 'user', content: `Pregunta: ${question}\n\nDatos disponibles (JSON):\n${JSON.stringify(context)}` },
+      ],
+      stream: false,
+      options: { temperature: 0.3 },
+    }),
+  });
+  if (res.status === 404) throw new Error(`Falta el modelo de razonamiento. Descárgalo con: ollama pull ${REASONING_MODEL}`);
+  if (!res.ok) throw new Error(`Ollama respondió ${res.status}.`);
+  const data = await res.json();
+  return { answer: stripThink(data?.message?.content ?? ''), context };
 }

@@ -9,6 +9,7 @@ const EJEMPLOS = ['¿Cuánto debe Sergio?', '¿Cuánto se le debe a Ramon?', 'Sa
 export default function AgentClient() {
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(false);
+  const [reasoning, setReasoning] = useState(false);
   const [turns, setTurns] = useState<Turn[]>([]);
 
   async function ask(question: string) {
@@ -20,7 +21,7 @@ export default function AgentClient() {
     try {
       const r = await fetch('/api/agent', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question, mode: reasoning ? 'reasoning' : 'normal' }),
       });
       const d = await r.json();
       setTurns((t) => t.map((x, i) => i === idx ? (d.ok ? { ...x, answer: d.answer, tools: d.toolCalls } : { ...x, error: d.error }) : x));
@@ -37,6 +38,11 @@ export default function AgentClient() {
       <p className="mt-1 text-slate-500">
         Pregunta en lenguaje natural. El agente consulta la base y responde con evidencia — no inventa cifras. Solo lectura.
       </p>
+
+      <label className="mt-3 flex items-center gap-2 text-sm text-slate-600">
+        <input type="checkbox" checked={reasoning} onChange={(e) => setReasoning(e.target.checked)} />
+        Modo razonamiento (DeepSeek-R1): analiza inconsistencias y duplicados. Más lento.
+      </label>
 
       <div className="mt-4 flex flex-wrap gap-2">
         {EJEMPLOS.map((e) => (

@@ -91,6 +91,75 @@ export async function utilidadMesa() {
   return { comisiones_cobradas_usd: comisiones, gastos_pagados_usd: gastos, utilidad_usd: Math.round((comisiones - gastos) * 100) / 100 };
 }
 
+// utilidad_mes: Comisiones - Gastos de un mes (por defecto el mes con datos más reciente).
+export async function utilidadMes(anio?: number, mes?: number) {
+  let y = anio, m = mes;
+  if (!y || !m) {
+    const last = await pool.query(
+      `SELECT EXTRACT(YEAR FROM max(effective_at))::int y, EXTRACT(MONTH FROM max(effective_at))::int m
+       FROM fund_movements fm WHERE ${BASE}`,
+    );
+    y = y ?? last.rows[0].y; m = m ?? last.rows[0].m;
+  }
+  const r = await pool.query(
+    `SELECT a.medium, SUM(CASE WHEN fm.direction='inflow' THEN fm.usd_amount ELSE -fm.usd_amount END)::float8 bal
+     FROM fund_movements fm JOIN accounts a ON a.id=fm.account_id
+     WHERE ${BASE} AND a.medium IN ('commission','expense')
+       AND fm.effective_at >= make_date($1,$2,1) AND fm.effective_at < (make_date($1,$2,1) + interval '1 month')
+     GROUP BY a.medium`,
+    [y, m],
+  );
+  let cb = 0, gb = 0;
+  for (const x of r.rows) { if (x.medium === 'commission') cb = x.bal; else gb = x.bal; }
+  const comisiones = Math.round(-cb * 100) / 100, gastos = Math.round(gb * 100) / 100;
+  return { anio: y, mes: m, comisiones_cobradas_usd: comisiones, gastos_pagados_usd: gastos, utilidad_usd: Math.round((comisiones - gastos) * 100) / 100 };
+}
+
+// estado_conciliacion: resumen de conciliación de BINANCE CH.
+export async function estadoConciliacion() {
+  const accId = (await pool.query(`SELECT id FROM accounts WHERE name='BINANCE CH'`)).rows[0]?.id;
+  const total = (await pool.query(`SELECT count(*)::int n FROM fund_movements fm WHERE fm.account_id=$1 AND ${BASE}`, [accId])).rows[0].n;
+  const conc = (await pool.query(
+    `SELECT count(DISTINCT fm.id)::int n FROM fund_movements fm
+     JOIN reconciliations r ON r.fund_movement_id=fm.id AND r.status='confirmed'
+     WHERE fm.account_id=$1 AND ${BASE}`, [accId])).rows[0].n;
+  const st = await pool.query(
+    `SELECT r.status, count(*)::int n FROM reconciliations r JOIN fund_movements fm ON fm.id=r.fund_movement_id
+     WHERE fm.account_id=$1 GROUP BY r.status`, [accId]);
+  const byStatus: Record<string, number> = {};
+  for (const x of st.rows) byStatus[x.status] = x.n;
+  return {
+    cuenta: 'BINANCE CH', movimientos_libro: total, movimientos_conciliados: conc,
+    porcentaje_conciliado: total ? Math.round((conc / total) * 1000) / 10 : 0,
+    reconciliaciones_confirmadas: byStatus.confirmed ?? 0,
+    reconciliaciones_sugeridas: byStatus.suggested ?? 0,
+    reconciliaciones_rechazadas: byStatus.rejected ?? 0,
+  };
+}
+
+// buscar_duplicados: posibles duplicados (misma fecha, cliente, cuenta, dirección y monto).
+export async function buscarDuplicados(limit = 30) {
+  const r = await pool.query(
+    `SELECT fm.effective_at::date::text fecha, c.name cliente, a.name cuenta, fm.direction, fm.usd_amount::float8 usd,
+            count(*)::int veces, array_agg(fm.kw2_id) kw2_ids
+     FROM fund_movements fm
+     JOIN accounts a ON a.id=fm.account_id
+     LEFT JOIN clients c ON c.id=fm.client_id
+     WHERE ${BASE}
+     GROUP BY fm.effective_at::date, c.name, a.name, fm.direction, fm.usd_amount
+     HAVING count(*) > 1
+     ORDER BY count(*) DESC, fm.usd_amount DESC
+     LIMIT $1`, [limit]);
+  return {
+    grupos: r.rows.length,
+    posibles_duplicados: r.rows.map((x: any) => ({
+      fecha: x.fecha, cliente: x.cliente, cuenta: x.cuenta,
+      direccion: x.direction === 'inflow' ? 'entra' : 'sale',
+      usd: Math.round(x.usd * 100) / 100, veces: x.veces, kw2_ids: x.kw2_ids,
+    })),
+  };
+}
+
 // top_deudores_acreedores: mayores saldos de clientes reales.
 export async function topBalances(n = 10) {
   const r = await pool.query(
