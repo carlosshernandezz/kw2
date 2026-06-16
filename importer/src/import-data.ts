@@ -10,8 +10,8 @@ import { readRange } from './sheets.js';
 // - Chato existe duplicado en DATA (IDs 75 y 334); el canonico es 75
 //   (unico con movimientos). El 334 no se importa.
 const SKIPPED_ACCOUNTS = new Set(['EEE', 'TTT', 'XXX']);
-const SKIPPED_CLIENT_IDS = new Set([334]);
-const MERGED_LEGACY_IDS: Record<number, number> = { 334: 75 };
+const SKIPPED_CLIENT_IDS = new Set([334, 145]);
+const MERGED_LEGACY_IDS: Record<number, number> = { 334: 75, 145: 346 }; // Chato; Prestamo Binance = Binance Loan
 
 // Solo conceptos de control que deben dar 0 (confirmado por Carlos 16-jun-2026).
 // Todo lo demas es cliente real: Comisiones *, Binance Loan, Sin Identificar,

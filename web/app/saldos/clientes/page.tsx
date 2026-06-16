@@ -59,7 +59,7 @@ function Col({ title, total, rows, tone }: { title: string; total: number; rows:
           <tbody className="divide-y divide-slate-100">
             {rows.map((c) => (
               <tr key={c.legacyId}>
-                <td className="px-3 py-2">{c.name}</td>
+                <td className="px-3 py-2"><a className="hover:underline" href={`/clientes/${c.legacyId}`}>{c.name}</a></td>
                 <td className={'px-3 py-2 text-right tabular-nums ' + tone}>{usd(c.balance)}</td>
               </tr>
             ))}
