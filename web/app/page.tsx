@@ -1,4 +1,5 @@
 import { summary } from '@/lib/reconciliation';
+import SyncButton from './SyncButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,6 +10,14 @@ export default async function Home() {
     <div className="mx-auto max-w-3xl">
       <h1 className="text-2xl font-semibold text-slate-900">Inicio</h1>
       <p className="mt-1 text-slate-500">Sistema interno de la mesa KW2.</p>
+
+      <div className="mt-6 rounded-xl border border-slate-200 bg-white p-5">
+        <h2 className="font-medium text-slate-900">Sincronizar con el Google Sheet</h2>
+        <p className="mt-1 mb-3 text-sm text-slate-500">
+          Trae los cambios del Sheet a la app (reimport seguro por kw2_id). No modifica el Sheet.
+        </p>
+        <SyncButton />
+      </div>
 
       <div className="mt-6 rounded-xl border border-slate-200 bg-white p-5">
         <h2 className="font-medium text-slate-900">Conciliación BINANCE CH</h2>

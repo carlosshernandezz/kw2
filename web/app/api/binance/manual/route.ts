@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { unmatchedLedger, unmatchedStatement, manualMatch, markLedgerNoCounterpart, markStatementMissingInSheet } from '@/lib/manual';
+import { unmatchedLedger, unmatchedStatement, manualMatch, markLedgerNoCounterpart, markStatementMissingInSheet, undoReconciliation } from '@/lib/manual';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,6 +23,10 @@ export async function POST(req: NextRequest) {
     }
     if (body.action === 'mark-statement-missing') {
       const n = await markStatementMissingInSheet(stmtIds);
+      return NextResponse.json({ ok: true, changed: n });
+    }
+    if (body.action === 'undo') {
+      const n = await undoReconciliation(Number(body.fundMovementId));
       return NextResponse.json({ ok: true, changed: n });
     }
     return NextResponse.json({ ok: false, error: 'accion invalida' }, { status: 400 });

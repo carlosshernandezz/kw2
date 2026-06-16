@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 // Carga el .env de la raiz del repo sin depender del directorio actual.
 dotenv.config({
   path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.env'),
+  quiet: true,
 });
 
 export function dbClient() {

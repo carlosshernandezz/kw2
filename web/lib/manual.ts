@@ -14,6 +14,61 @@ export type ReconciledRow = {
   nOps: number; confidence: number | null; manual: boolean;
 };
 export type MarkRow = { id: number; type: string; mark: string; date: string; amount: string; label: string };
+export type ReviewRow = {
+  id: number; kw2id: string | null; date: string; direction: string; amount: string;
+  nombre: string | null; conciliado: string; links: { date: string; amount: string; operation: string }[];
+};
+
+// Movimientos cuyo monto cambio y ya no cuadran con su conciliacion (needs_review).
+export async function needsReview(): Promise<ReviewRow[]> {
+  const accId = await accountId();
+  const r = await pool.query(
+    `SELECT fm.id, fm.kw2_id, fm.effective_at::date::text date, fm.direction, fm.usd_amount::text amount,
+            fm.source_payload->>'nombre' nombre, SUM(r.allocated_native_amount)::text conciliado,
+            json_agg(json_build_object(
+              'date', (et.effective_at AT TIME ZONE 'America/Caracas')::date::text,
+              'amount', et.native_amount::text,
+              'operation', et.raw_payload->>'operation')) links
+     FROM fund_movements fm
+     JOIN reconciliations r ON r.fund_movement_id=fm.id AND r.status='confirmed'
+     JOIN external_transactions et ON et.id=r.external_transaction_id
+     WHERE fm.account_id=$1 AND fm.status='needs_review'
+     GROUP BY fm.id, fm.kw2_id, fm.effective_at, fm.direction, fm.usd_amount, fm.source_payload->>'nombre'
+     ORDER BY fm.effective_at`,
+    [accId],
+  );
+  return r.rows.map((x: any) => ({
+    id: x.id, kw2id: x.kw2_id, date: x.date, direction: x.direction, amount: x.amount,
+    nombre: x.nombre, conciliado: x.conciliado, links: x.links,
+  }));
+}
+
+// Deshace la conciliacion de un movimiento: rechaza sus reconciliaciones y lo
+// devuelve a 'posted' (vuelve a la cola para reconciliarlo bien).
+export async function undoReconciliation(fundMovementId: number, actor = ACTOR): Promise<number> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const upd = await client.query(
+      `UPDATE reconciliations SET status='rejected', updated_at=now()
+       WHERE fund_movement_id=$1 AND status='confirmed' RETURNING id`,
+      [fundMovementId],
+    );
+    await client.query(`UPDATE fund_movements SET status='posted', updated_at=now() WHERE id=$1 AND status<>'voided'`, [fundMovementId]);
+    await client.query(
+      `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state)
+       VALUES ('user',$1,'undo_reconciliation','fund_movement',$2,$3)`,
+      [actor, String(fundMovementId), JSON.stringify({ rejected: upd.rows.map((r: any) => r.id) })],
+    );
+    await client.query('COMMIT');
+    return upd.rowCount ?? 0;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
 
 // Movimientos del libro ya conciliados (confirmados), con cuantas ops del estado los cubren.
 export async function reconciledLedger(): Promise<ReconciledRow[]> {

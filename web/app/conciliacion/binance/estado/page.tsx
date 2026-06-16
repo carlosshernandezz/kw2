@@ -1,11 +1,11 @@
-import { reconciledLedger, unmatchedLedger, unmatchedStatement, marks } from '@/lib/manual';
+import { reconciledLedger, unmatchedLedger, unmatchedStatement, marks, needsReview } from '@/lib/manual';
 import EstadoClient from './ui';
 
 export const dynamic = 'force-dynamic';
 
 export default async function Page() {
-  const [reconciled, pendingLedger, pendingStatement, discrepancies] = await Promise.all([
-    reconciledLedger(), unmatchedLedger(), unmatchedStatement(), marks(),
+  const [reconciled, pendingLedger, pendingStatement, discrepancies, review] = await Promise.all([
+    reconciledLedger(), unmatchedLedger(), unmatchedStatement(), marks(), needsReview(),
   ]);
   return (
     <EstadoClient
@@ -13,6 +13,7 @@ export default async function Page() {
       pendingLedger={pendingLedger}
       pendingStatement={pendingStatement}
       discrepancies={discrepancies}
+      review={review}
     />
   );
 }
