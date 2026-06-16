@@ -19,6 +19,8 @@ Esta carpeta organiza la documentacion del redisenio operativo y tecnico de KW2.
 - `04-agente-ia/arquitectura-agente-local-v0.md`
 - `05-implementacion/puesta-en-marcha-mac-mini.md`
 - `05-implementacion/docker-postgresql.md`
+- `05-implementacion/estado-proyecto.md`
+- `05-implementacion/prompt-continuar-nueva-conversacion.md`
 
 ## Convencion
 

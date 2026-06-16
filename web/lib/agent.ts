@@ -44,8 +44,6 @@ async function runTool(name: string, args: any): Promise<unknown> {
     // Resumen compacto orientado a la respuesta (no la lista cruda completa).
     const entradas = d.movimientos.filter((m) => m.direction === 'inflow').reduce((s, m) => s + m.usd, 0);
     const salidas = d.movimientos.filter((m) => m.direction === 'outflow').reduce((s, m) => s + m.usd, 0);
-    const ejemplos = [...d.movimientos].sort((a, b) => b.usd - a.usd).slice(0, 4)
-      .map((m) => ({ fecha: m.date, cuenta: m.account, direccion: m.direction === 'inflow' ? 'entra' : 'sale', usd: m.usd, kw2_id: m.kw2id }));
     return {
       cliente: d.name,
       saldo_usd: d.balance,
@@ -53,7 +51,6 @@ async function runTool(name: string, args: any): Promise<unknown> {
       total_movimientos: d.movimientos.length,
       total_entradas_usd: Math.round(entradas * 100) / 100,
       total_salidas_usd: Math.round(salidas * 100) / 100,
-      ejemplos,
     };
   }
   return { error: `herramienta desconocida: ${name}` };
