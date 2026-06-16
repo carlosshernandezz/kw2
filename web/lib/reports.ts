@@ -37,12 +37,32 @@ export async function accountBalances(): Promise<AccountBalance[]> {
   return r.rows.map((x: any) => ({ legacyId: x.legacy_id, name: x.name, medium: x.medium, balance: Math.round(x.balance * 100) / 100 }));
 }
 
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
 export type Kpis = {
   totalDeudores: number; totalAcreedores: number;
   clientesDeudores: number; clientesAcreedores: number;
   porMedio: { medium: string; balance: number }[];
   movimientos: number;
+  comisiones: number; gastos: number; utilidad: number;
+  controlCero: { name: string; balance: number }[];
 };
+
+// Utilidad de la mesa = Comisiones cobradas - Gastos pagados.
+// En el libro: comisiones van como debitos en la cuenta COMISION (saldo
+// negativo) y gastos como creditos en GASTO (saldo positivo).
+export async function utilidad(): Promise<{ comisiones: number; gastos: number; utilidad: number }> {
+  const r = await pool.query(
+    `SELECT a.medium, SUM(CASE WHEN fm.direction='inflow' THEN fm.usd_amount ELSE -fm.usd_amount END)::float8 bal
+     FROM fund_movements fm JOIN accounts a ON a.id=fm.account_id
+     WHERE ${BASE} AND a.medium IN ('commission','expense') GROUP BY a.medium`,
+  );
+  let comisionBal = 0, gastoBal = 0;
+  for (const x of r.rows) { if (x.medium === 'commission') comisionBal = x.bal; else gastoBal = x.bal; }
+  const comisiones = -comisionBal; // saldo negativo -> total cobrado positivo
+  const gastos = gastoBal;
+  return { comisiones: r2(comisiones), gastos: r2(gastos), utilidad: r2(comisiones - gastos) };
+}
 
 export async function kpis(): Promise<Kpis> {
   const clients = await clientBalances();
@@ -55,13 +75,17 @@ export async function kpis(): Promise<Kpis> {
   for (const a of accts) byMedium.set(a.medium, (byMedium.get(a.medium) ?? 0) + a.balance);
 
   const mov = await pool.query(`SELECT count(*)::int n FROM fund_movements fm WHERE ${BASE}`);
+  const u = await utilidad();
+  const control = clients.filter((c) => c.kind === 'system').map((c) => ({ name: c.name, balance: c.balance }));
 
   return {
-    totalDeudores: Math.round(totalDeudores * 100) / 100,
-    totalAcreedores: Math.round(totalAcreedores * 100) / 100,
+    totalDeudores: r2(totalDeudores),
+    totalAcreedores: r2(totalAcreedores),
     clientesDeudores: real.filter((c) => c.balance < 0).length,
     clientesAcreedores: real.filter((c) => c.balance > 0).length,
-    porMedio: [...byMedium].map(([medium, balance]) => ({ medium, balance: Math.round(balance * 100) / 100 })),
+    porMedio: [...byMedium].map(([medium, balance]) => ({ medium, balance: r2(balance) })),
     movimientos: mov.rows[0].n,
+    comisiones: u.comisiones, gastos: u.gastos, utilidad: u.utilidad,
+    controlCero: control,
   };
 }

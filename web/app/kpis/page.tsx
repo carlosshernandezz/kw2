@@ -15,7 +15,15 @@ export default async function Page() {
       <h1 className="text-2xl font-semibold text-slate-900">KPIs</h1>
       <p className="mt-1 text-slate-500">Indicadores calculados desde el libro.</p>
 
-      <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3">
+      <h2 className="mt-5 mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">Utilidad de la mesa</h2>
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+        <Card label="Comisiones cobradas" value={usd(k.comisiones)} tone="text-emerald-600" />
+        <Card label="Gastos pagados" value={usd(k.gastos)} tone="text-rose-600" />
+        <Card label="Utilidad (comisiones − gastos)" value={usd(k.utilidad)} tone={k.utilidad >= 0 ? 'text-emerald-700' : 'text-rose-700'} />
+      </div>
+
+      <h2 className="mt-8 mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">Clientes</h2>
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
         <Card label="Total deudores" value={usd(k.totalDeudores)} sub={`${k.clientesDeudores} clientes`} tone="text-rose-600" />
         <Card label="Total acreedores" value={usd(k.totalAcreedores)} sub={`${k.clientesAcreedores} clientes`} tone="text-emerald-600" />
         <Card label="Movimientos" value={k.movimientos.toLocaleString('es-VE')} sub="en el libro" tone="text-slate-700" />
@@ -28,9 +36,23 @@ export default async function Page() {
         ))}
       </div>
 
-      <div className="mt-8 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-        <strong>Utilidad:</strong> tu hoja calcula utilidad diaria/semanal/mensual y "UTILIDAD CH" con una
-        fórmula propia. Para mostrarla aquí sin inventar nada, necesito que me confirmes cómo se calcula.
+      {k.controlCero.length > 0 && (
+        <>
+          <h2 className="mt-8 mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
+            Controles (deben dar 0)
+          </h2>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+            {k.controlCero.map((c) => {
+              const ok = Math.abs(c.balance) < 0.005;
+              return <Card key={c.name} label={c.name} value={usd(c.balance)} sub={ok ? '✓ en cero' : '⚠ revisar'} tone={ok ? 'text-emerald-600' : 'text-amber-600'} />;
+            })}
+          </div>
+        </>
+      )}
+
+      <div className="mt-8 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+        La <strong>utilidad</strong> se calcula como comisiones cobradas − gastos pagados (cuentas COMISION y
+        GASTO). Compárala con la "UTILIDAD CH" de tu hoja; si difiere, dime y ajusto la fórmula.
       </div>
     </div>
   );

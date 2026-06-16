@@ -13,13 +13,11 @@ const SKIPPED_ACCOUNTS = new Set(['EEE', 'TTT', 'XXX']);
 const SKIPPED_CLIENT_IDS = new Set([334]);
 const MERGED_LEGACY_IDS: Record<number, number> = { 334: 75 };
 
-const SYSTEM_CLIENT_NAMES = new Set(
-  ['2025', 'Binance P2P', 'Binance Loan', 'Prestamo Binance', 'Sin Identificar', 'TS', 'CH', 'Ajuste BS'].map((n) =>
-    n.toLowerCase(),
-  ),
-);
-const isSystemClient = (name: string) =>
-  SYSTEM_CLIENT_NAMES.has(name.toLowerCase()) || name.toLowerCase().startsWith('comisiones ');
+// Solo conceptos de control que deben dar 0 (confirmado por Carlos 16-jun-2026).
+// Todo lo demas es cliente real: Comisiones *, Binance Loan, Sin Identificar,
+// CH (cliente mesa), 2025 (puente entre años), etc.
+const SYSTEM_CLIENT_NAMES = new Set(['ajuste bs', 'binance p2p', 'ts']);
+const isSystemClient = (name: string) => SYSTEM_CLIENT_NAMES.has(name.toLowerCase());
 
 type AccountSpec = { medium: string; currency: string; feeRate?: number };
 const ACCOUNT_SPECS: Record<string, AccountSpec> = {
