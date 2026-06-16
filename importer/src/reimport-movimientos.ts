@@ -34,11 +34,21 @@ async function main() {
     const rows: any[] = [];
     const snapshotKw2 = new Set<string>();
 
+    // Red de seguridad: kw2_id duplicados (ej. fila copiada/pegada antes de que
+    // el Apps Script reasigne). No se procesan, para no corromper datos.
+    const kw2Count = new Map<string, number>();
+    for (const { p } of snap.rows) {
+      const k = String(p.kw2_id ?? '').trim();
+      if (k) kw2Count.set(k, (kw2Count.get(k) ?? 0) + 1);
+    }
+    const dupSet = new Set([...kw2Count].filter(([, c]) => c > 1).map(([k]) => k));
+
     for (const { p } of snap.rows) {
       const rn = Number(p.row_number);
       const kw2 = String(p.kw2_id ?? '').trim();
       if (!kw2) { skipped.push({ rn, reason: 'sin kw2_id' }); continue; }
-      snapshotKw2.add(kw2);
+      snapshotKw2.add(kw2); // presente en el Sheet: no anular su movimiento
+      if (dupSet.has(kw2)) { skipped.push({ rn, reason: `kw2_id duplicado: ${kw2}` }); continue; }
 
       const account = accountByName.get(String(p.banco ?? '').trim());
       if (!account) { skipped.push({ rn, reason: `banco desconocido: ${p.banco}` }); continue; }
@@ -118,6 +128,10 @@ async function main() {
 
     console.log(`Insertados: ${inserted} | Actualizados: ${updated} | Anulados (borrados en Sheet): ${voidRes.rowCount}`);
     console.log(`Omitidos: ${skipped.length}`);
+    if (dupSet.size > 0) {
+      console.log(`\n⚠ kw2_id DUPLICADOS en el Sheet (no procesados, corregir): ${[...dupSet].join(', ')}`);
+      console.log('  Suele pasar al copiar/pegar una fila. El Apps Script los reasigna solo en unos segundos; vuelve a sincronizar.');
+    }
     if (voidedWithRecon.length) console.log(`  ⚠ ${voidedWithRecon.length} anulados TENIAN conciliaciones (revisar): ${voidedWithRecon.map((r:any)=>r.kw2_id).join(', ')}`);
     if (needsReview.length) {
       console.log(`\n⚠ ${needsReview.length} movimientos quedaron 'needs_review' (su conciliacion ya no cuadra con el nuevo monto):`);

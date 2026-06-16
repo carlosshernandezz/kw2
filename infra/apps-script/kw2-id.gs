@@ -48,16 +48,21 @@ function assignMissingIds() {
   var idRange = sheet.getRange(2, idCol, n, 1);
   var ids = idRange.getValues();
 
+  // Recorre de arriba hacia abajo. La PRIMERA fila con un codigo se lo queda;
+  // una fila posterior con el MISMO codigo (ej. copiada/pegada) recibe uno
+  // nuevo. Asi, al copiar una operacion vieja y pegarla como nueva, la copia
+  // no duplica el codigo: se le asigna uno propio.
   var used = {};
-  for (var i = 0; i < ids.length; i++) if (ids[i][0]) used[ids[i][0]] = true;
-
-  var assigned = 0;
+  var changed = 0;
   for (var j = 0; j < n; j++) {
     var hasDate = dates[j][0] !== '' && dates[j][0] !== null;
-    if (hasDate && !ids[j][0]) { ids[j][0] = genCode_(used); assigned++; }
+    if (!hasDate) continue;
+    var cur = ids[j][0];
+    if (cur && !used[cur]) { used[cur] = true; }      // primera aparicion: se queda
+    else { ids[j][0] = genCode_(used); changed++; }   // vacio o duplicado: codigo nuevo
   }
-  if (assigned > 0) idRange.setValues(ids);
-  return assigned;
+  if (changed > 0) idRange.setValues(ids);
+  return changed;
 }
 
 /** Correr una sola vez para llenar las filas existentes. */
