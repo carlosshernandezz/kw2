@@ -42,11 +42,17 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                 Cambios para la hoja
               </a>
               <span className="px-3 pt-4 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                Próximamente
+                Reportes
               </span>
-              <span className="rounded-md px-3 py-2 text-slate-400">Saldos de clientes</span>
-              <span className="rounded-md px-3 py-2 text-slate-400">Saldos por cuenta</span>
-              <span className="rounded-md px-3 py-2 text-slate-400">Utilidades y KPIs</span>
+              <a className="rounded-md px-3 py-2 font-medium text-slate-700 hover:bg-slate-100" href="/saldos/clientes">
+                Saldos de clientes
+              </a>
+              <a className="rounded-md px-3 py-2 font-medium text-slate-700 hover:bg-slate-100" href="/saldos/cuentas">
+                Saldos por cuenta
+              </a>
+              <a className="rounded-md px-3 py-2 font-medium text-slate-700 hover:bg-slate-100" href="/kpis">
+                KPIs
+              </a>
             </nav>
           </aside>
           <main className="flex-1 px-8 py-6">{children}</main>
