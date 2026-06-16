@@ -46,3 +46,61 @@ export async function clientDetail(legacyId: string): Promise<ClientDetail | nul
   const balance = movimientos.reduce((s, m) => s + (m.direction === 'inflow' ? m.usd : -m.usd), 0);
   return { legacyId: c.legacy_id, name: c.name, kind: c.kind, balance: Math.round(balance * 100) / 100, movimientos };
 }
+
+// que_falta_conciliar: pendientes de conciliación en BINANCE CH.
+export async function unreconciledBinance() {
+  const accId = (await pool.query(`SELECT id FROM accounts WHERE name='BINANCE CH'`)).rows[0]?.id;
+  const libro = await pool.query(
+    `SELECT count(*)::int n FROM fund_movements fm
+     WHERE fm.account_id=$1 AND ${BASE}
+       AND NOT EXISTS (SELECT 1 FROM reconciliations r WHERE r.fund_movement_id=fm.id AND r.status<>'rejected')
+       AND NOT EXISTS (SELECT 1 FROM reconciliation_marks m WHERE m.entity_type='fund_movement' AND m.entity_id=fm.id AND m.status='active')`,
+    [accId],
+  );
+  const estado = await pool.query(
+    `SELECT count(*)::int n FROM external_transactions et
+     WHERE et.source_type='binance_statement' AND et.source_account='BINANCE CH' AND (et.raw_payload->>'relevant')::boolean
+       AND (et.effective_at AT TIME ZONE 'America/Caracas')::date >= '2026-01-01'
+       AND NOT EXISTS (SELECT 1 FROM reconciliations r WHERE r.external_transaction_id=et.id AND r.status<>'rejected')
+       AND NOT EXISTS (SELECT 1 FROM reconciliation_marks m WHERE m.entity_type='external_transaction' AND m.entity_id=et.id AND m.status='active')`,
+  );
+  return { cuenta: 'BINANCE CH', movimientos_libro_sin_conciliar: libro.rows[0].n, filas_estado_sin_conciliar: estado.rows[0].n };
+}
+
+// zelles_sin_identificar: saldo del cliente "Sin Identificar" + alias pendientes.
+export async function unidentifiedZelle() {
+  const saldo = await pool.query(
+    `SELECT COALESCE(SUM(CASE WHEN fm.direction='inflow' THEN fm.usd_amount ELSE -fm.usd_amount END),0)::float8 s
+     FROM fund_movements fm JOIN clients c ON c.id=fm.client_id
+     WHERE c.name ILIKE 'sin identificar' AND ${BASE}`,
+  );
+  const alias = await pool.query(`SELECT count(*)::int n FROM client_aliases WHERE status='unidentified'`);
+  return { saldo_sin_identificar_usd: Math.round(saldo.rows[0].s * 100) / 100, alias_zelle_sin_identificar: alias.rows[0].n };
+}
+
+// utilidad_mesa: Comisiones - Gastos.
+export async function utilidadMesa() {
+  const r = await pool.query(
+    `SELECT a.medium, SUM(CASE WHEN fm.direction='inflow' THEN fm.usd_amount ELSE -fm.usd_amount END)::float8 bal
+     FROM fund_movements fm JOIN accounts a ON a.id=fm.account_id
+     WHERE ${BASE} AND a.medium IN ('commission','expense') GROUP BY a.medium`,
+  );
+  let cb = 0, gb = 0;
+  for (const x of r.rows) { if (x.medium === 'commission') cb = x.bal; else gb = x.bal; }
+  const comisiones = Math.round(-cb * 100) / 100, gastos = Math.round(gb * 100) / 100;
+  return { comisiones_cobradas_usd: comisiones, gastos_pagados_usd: gastos, utilidad_usd: Math.round((comisiones - gastos) * 100) / 100 };
+}
+
+// top_deudores_acreedores: mayores saldos de clientes reales.
+export async function topBalances(n = 10) {
+  const r = await pool.query(
+    `SELECT c.name, SUM(CASE WHEN fm.direction='inflow' THEN fm.usd_amount ELSE -fm.usd_amount END)::float8 bal
+     FROM fund_movements fm JOIN clients c ON c.id=fm.client_id
+     WHERE ${BASE} AND c.kind='client'
+     GROUP BY c.name`,
+  );
+  const rows = r.rows.map((x: any) => ({ name: x.name, balance: Math.round(x.bal * 100) / 100 })).filter((x) => Math.abs(x.balance) >= 0.005);
+  const deudores = rows.filter((x) => x.balance < 0).sort((a, b) => a.balance - b.balance).slice(0, n);
+  const acreedores = rows.filter((x) => x.balance > 0).sort((a, b) => b.balance - a.balance).slice(0, n);
+  return { top_deudores: deudores, top_acreedores: acreedores };
+}

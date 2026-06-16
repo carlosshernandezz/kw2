@@ -1,7 +1,7 @@
 // Agente local de solo lectura (Nivel 1). Usa el modelo local (Ollama, qwen3)
 // SOLO como interfaz: interpreta la pregunta, llama herramientas deterministas
 // y redacta la respuesta. Nunca inventa cifras; todo numero viene de las tools.
-import { findClients, clientDetail } from './agent-tools';
+import { findClients, clientDetail, unreconciledBinance, unidentifiedZelle, utilidadMesa, topBalances } from './agent-tools';
 
 const OLLAMA = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
 const MODEL = process.env.KW2_AGENT_MODEL ?? 'qwen3:8b';
@@ -9,6 +9,7 @@ const MODEL = process.env.KW2_AGENT_MODEL ?? 'qwen3:8b';
 const SYSTEM = `Eres el asistente de solo lectura de la mesa de cambio KW2. Respondes SIEMPRE en español, en 2-4 frases, directo.
 Reglas:
 - NUNCA inventes cifras. Usa SIEMPRE las herramientas y básate SOLO en lo que devuelven (no agregues análisis ni código).
+- No agregues montos, conteos ni fechas que no aparezcan literalmente en el resultado de la herramienta.
 - Responde la pregunta del usuario directamente con los datos del resumen de la herramienta.
 - Di si el cliente es deudor (saldo negativo, debe a KW2) o acreedor (saldo positivo, KW2 le debe) y el monto.
 - Si la herramienta devuelve "candidatos", pide al usuario que precise el nombre.
@@ -27,6 +28,38 @@ const tools = [
         properties: { nombre: { type: 'string', description: 'nombre o parte del nombre del cliente' } },
         required: ['nombre'],
       },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'que_falta_conciliar',
+      description: 'Cuántos movimientos del libro y filas del estado de cuenta de BINANCE CH faltan por conciliar. Úsala para "¿qué falta conciliar?", "¿cuánto queda por conciliar?".',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'zelles_sin_identificar',
+      description: 'Saldo del cliente "Sin Identificar" y cuántos alias Zelle están sin identificar. Úsala para "¿qué Zelles no están identificados?".',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'utilidad_mesa',
+      description: 'Utilidad de la mesa = comisiones cobradas − gastos pagados. Úsala para "¿cuál es la utilidad?", "¿cuánto hemos ganado?".',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'top_deudores_acreedores',
+      description: 'Lista de los mayores deudores y acreedores. Úsala para "¿quién debe más?", "top deudores", "¿a quién le debemos más?".',
+      parameters: { type: 'object', properties: {} },
     },
   },
 ];
@@ -54,6 +87,10 @@ async function runTool(name: string, args: any): Promise<unknown> {
       total_salidas_usd: Math.round(salidas * 100) / 100,
     };
   }
+  if (name === 'que_falta_conciliar') return await unreconciledBinance();
+  if (name === 'zelles_sin_identificar') return await unidentifiedZelle();
+  if (name === 'utilidad_mesa') return await utilidadMesa();
+  if (name === 'top_deudores_acreedores') return await topBalances(10);
   return { error: `herramienta desconocida: ${name}` };
 }
 
