@@ -9,19 +9,18 @@ const EJEMPLOS = ['¿Cuánto debe Sergio?', '¿Cuánto se le debe a Ramon?', 'Sa
 export default function AgentClient() {
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(false);
-  const [reasoning, setReasoning] = useState(false);
   const [turns, setTurns] = useState<Turn[]>([]);
 
-  async function ask(question: string) {
+  async function ask(question: string, mode: 'normal' | 'reasoning' = 'normal') {
     if (!question.trim() || busy) return;
     setBusy(true);
     setQ('');
     const idx = turns.length;
-    setTurns((t) => [...t, { q: question }]);
+    setTurns((t) => [...t, { q: mode === 'reasoning' ? '🔍 ' + question : question }]);
     try {
       const r = await fetch('/api/agent', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ question, mode: reasoning ? 'reasoning' : 'normal' }),
+        body: JSON.stringify({ question, mode }),
       });
       const d = await r.json();
       setTurns((t) => t.map((x, i) => i === idx ? (d.ok ? { ...x, answer: d.answer, tools: d.toolCalls } : { ...x, error: d.error }) : x));
@@ -39,11 +38,6 @@ export default function AgentClient() {
         Pregunta en lenguaje natural. El agente consulta la base y responde con evidencia — no inventa cifras. Solo lectura.
       </p>
 
-      <label className="mt-3 flex items-center gap-2 text-sm text-slate-600">
-        <input type="checkbox" checked={reasoning} onChange={(e) => setReasoning(e.target.checked)} />
-        Modo razonamiento (DeepSeek-R1): analiza inconsistencias y duplicados. Más lento.
-      </label>
-
       <div className="mt-4 flex flex-wrap gap-2">
         {EJEMPLOS.map((e) => (
           <button key={e} onClick={() => ask(e)} disabled={busy}
@@ -52,6 +46,14 @@ export default function AgentClient() {
           </button>
         ))}
       </div>
+
+      <button
+        onClick={() => ask('Revisa los posibles duplicados y las conciliaciones que no cuadran; señala lo que parezca un error real.', 'reasoning')}
+        disabled={busy}
+        className="mt-3 rounded-md border border-violet-300 bg-violet-50 px-3 py-1.5 text-sm font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-40"
+      >
+        🔍 Revisar inconsistencias (DeepSeek-R1, más lento)
+      </button>
 
       <div className="mt-4 space-y-4">
         {turns.map((t, i) => (

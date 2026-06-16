@@ -1,7 +1,7 @@
 // Agente local de solo lectura (Nivel 1). Usa el modelo local (Ollama, qwen3)
 // SOLO como interfaz: interpreta la pregunta, llama herramientas deterministas
 // y redacta la respuesta. Nunca inventa cifras; todo numero viene de las tools.
-import { findClients, clientDetail, unreconciledBinance, unidentifiedZelle, utilidadMesa, topBalances, utilidadMes, estadoConciliacion, buscarDuplicados } from './agent-tools';
+import { findClients, clientDetail, unreconciledBinance, unidentifiedZelle, utilidadMesa, topBalances, utilidadPeriodo, estadoConciliacion, buscarDuplicados } from './agent-tools';
 import { needsReview } from './manual';
 
 const OLLAMA = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
@@ -66,11 +66,15 @@ const tools = [
   {
     type: 'function',
     function: {
-      name: 'utilidad_mes',
-      description: 'Utilidad (comisiones − gastos) de un mes específico. Úsala para "utilidad de junio", "¿cuánto ganamos el mes pasado?". Si no se da mes, usa el más reciente.',
+      name: 'utilidad_periodo',
+      description: 'Utilidad (comisiones − gastos) de un día o un mes. Úsala para "utilidad de junio", "utilidad del 8 de junio", "¿cuánto ganamos ayer?". Pasa dia para un día específico; sin parámetros usa el mes más reciente.',
       parameters: {
         type: 'object',
-        properties: { anio: { type: 'integer', description: 'año, ej. 2026' }, mes: { type: 'integer', description: 'mes 1-12' } },
+        properties: {
+          anio: { type: 'integer', description: 'año, ej. 2026' },
+          mes: { type: 'integer', description: 'mes 1-12' },
+          dia: { type: 'integer', description: 'día del mes 1-31 (solo si se pide un día específico)' },
+        },
       },
     },
   },
@@ -119,7 +123,7 @@ async function runTool(name: string, args: any): Promise<unknown> {
   if (name === 'zelles_sin_identificar') return await unidentifiedZelle();
   if (name === 'utilidad_mesa') return await utilidadMesa();
   if (name === 'top_deudores_acreedores') return await topBalances(10);
-  if (name === 'utilidad_mes') return await utilidadMes(args?.anio ? Number(args.anio) : undefined, args?.mes ? Number(args.mes) : undefined);
+  if (name === 'utilidad_periodo') return await utilidadPeriodo(args?.anio ? Number(args.anio) : undefined, args?.mes ? Number(args.mes) : undefined, args?.dia ? Number(args.dia) : undefined);
   if (name === 'estado_conciliacion') return await estadoConciliacion();
   if (name === 'buscar_duplicados') return await buscarDuplicados(30);
   return { error: `herramienta desconocida: ${name}` };

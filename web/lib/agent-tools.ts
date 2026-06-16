@@ -91,28 +91,33 @@ export async function utilidadMesa() {
   return { comisiones_cobradas_usd: comisiones, gastos_pagados_usd: gastos, utilidad_usd: Math.round((comisiones - gastos) * 100) / 100 };
 }
 
-// utilidad_mes: Comisiones - Gastos de un mes (por defecto el mes con datos más reciente).
-export async function utilidadMes(anio?: number, mes?: number) {
-  let y = anio, m = mes;
-  if (!y || !m) {
-    const last = await pool.query(
-      `SELECT EXTRACT(YEAR FROM max(effective_at))::int y, EXTRACT(MONTH FROM max(effective_at))::int m
-       FROM fund_movements fm WHERE ${BASE}`,
-    );
-    y = y ?? last.rows[0].y; m = m ?? last.rows[0].m;
-  }
+// utilidad_periodo: Comisiones - Gastos de un día (si se da dia) o un mes.
+// Sin parámetros usa el mes con datos más reciente.
+export async function utilidadPeriodo(anio?: number, mes?: number, dia?: number) {
+  const last = await pool.query(
+    `SELECT EXTRACT(YEAR FROM max(effective_at))::int y, EXTRACT(MONTH FROM max(effective_at))::int m
+     FROM fund_movements fm WHERE ${BASE}`,
+  );
+  const y = anio ?? last.rows[0].y;
+  const m = mes ?? last.rows[0].m;
+  const porDia = !!dia;
+  const desde = porDia ? `make_date(${y},${m},${dia})` : `make_date(${y},${m},1)`;
+  const paso = porDia ? `interval '1 day'` : `interval '1 month'`;
   const r = await pool.query(
     `SELECT a.medium, SUM(CASE WHEN fm.direction='inflow' THEN fm.usd_amount ELSE -fm.usd_amount END)::float8 bal
      FROM fund_movements fm JOIN accounts a ON a.id=fm.account_id
      WHERE ${BASE} AND a.medium IN ('commission','expense')
-       AND fm.effective_at >= make_date($1,$2,1) AND fm.effective_at < (make_date($1,$2,1) + interval '1 month')
+       AND fm.effective_at >= ${desde} AND fm.effective_at < (${desde} + ${paso})
      GROUP BY a.medium`,
-    [y, m],
   );
   let cb = 0, gb = 0;
   for (const x of r.rows) { if (x.medium === 'commission') cb = x.bal; else gb = x.bal; }
   const comisiones = Math.round(-cb * 100) / 100, gastos = Math.round(gb * 100) / 100;
-  return { anio: y, mes: m, comisiones_cobradas_usd: comisiones, gastos_pagados_usd: gastos, utilidad_usd: Math.round((comisiones - gastos) * 100) / 100 };
+  return {
+    periodo: porDia ? `${dia}/${m}/${y}` : `${m}/${y}`,
+    comisiones_cobradas_usd: comisiones, gastos_pagados_usd: gastos,
+    utilidad_usd: Math.round((comisiones - gastos) * 100) / 100,
+  };
 }
 
 // estado_conciliacion: resumen de conciliación de BINANCE CH.
