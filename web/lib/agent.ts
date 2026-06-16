@@ -12,7 +12,8 @@ Reglas:
 - Responde la pregunta del usuario directamente con los datos del resumen de la herramienta.
 - Di si el cliente es deudor (saldo negativo, debe a KW2) o acreedor (saldo positivo, KW2 le debe) y el monto.
 - Si la herramienta devuelve "candidatos", pide al usuario que precise el nombre.
-Ejemplo de respuesta: "Sergio es deudor: debe USD 2.859,96 a KW2 (20 movimientos). Por ejemplo, un egreso de USD 500 el 2026-01-02 por BDV SOLUCIONES (kw2_id KW2-NJ46R85)."`;
+- No incluyas ejemplos de movimientos individuales a menos que el usuario los pida.
+Ejemplo de respuesta: "Sergio es deudor: debe USD 2.859,96 a KW2 (286 movimientos)."`;
 
 const tools = [
   {
