@@ -19,5 +19,8 @@ npx tsx src/import-sources.ts 2>/dev/null
 echo "== Conciliacion Bs (enlaces columna D) =="
 npx tsx src/reconstruct-bs-links.ts 2>/dev/null
 
+echo "== Sugerencias Bs (identidad historica + monto) =="
+npx tsx src/match-bs.ts 2>/dev/null
+
 echo "== Verificacion de saldos =="
 npx tsx src/verify-model.ts 2>/dev/null
