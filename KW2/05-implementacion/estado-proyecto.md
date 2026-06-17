@@ -15,7 +15,7 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 - **2 App espejo**: importa el Sheet, reproduce saldos (372/372 clientes, 17/17 cuentas), ID estable `kw2_id`, reimport seguro. ✅
 - **3 Conciliación asistida**: BINANCE CH completo (auto + manual + correcciones + needs_review + fees). Faltan: bancos Bs (EDO CTA BS), cash, Zelle, y el **año pasado**. 🔶
 - **4 Reportes/dashboard**: saldos de clientes, saldos por cuenta, KPIs, utilidad, ficha de cliente con evidencia. ✅ (falta cierre diario, comisiones operador/Jorge/Mileng, ajuste Bs)
-- **5 Agente IA local**: Q&A solo lectura con evidencia sobre qwen3:8b. ✅ v1 (1 herramienta; faltan más)
+- **5 Agente IA local**: Q&A solo lectura (8 herramientas) sobre qwen3:8b + modo razonamiento con deepseek-r1:8b. ✅
 - **6 Operación principal**: captura desde la app, app como fuente de verdad, 24/7. ⬜
 
 ## Infraestructura
@@ -62,12 +62,20 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 - **Saldo de cliente** = entradas − salidas (USD) desde fund_movements. Negativo = deudor (debe a KW2); positivo = acreedor (KW2 le debe).
 - **Utilidad de la mesa = Comisiones − Gastos**. En el libro: comisiones = débitos en cuenta COMISION (saldo negativo → comisiones = −saldo); gastos = saldo de cuenta GASTO. utilidad = (−saldo_COMISION) − saldo_GASTO. Verificado ≈ "UTILIDAD CH" del DASHBOARD. El dashboard del Sheet se ancla a hojas "Datos" y "Datos 2".
 
-## Agente local (Fase 5)
+## Agente local (Fase 5) — operativo en dos modos
 
-- `web/lib/agent.ts`: orquestador sobre Ollama `qwen3:8b`. Nivel 1, solo lectura. Interpreta la pregunta, llama herramientas deterministas, responde en español citando evidencia, NUNCA inventa cifras.
-- Herramientas en `web/lib/agent-tools.ts`: `findClients`, `clientDetail` (= get_client_balance, con resumen compacto: saldo, rol, totales). Tool del agente: `consultar_saldo_cliente`.
-- Pantalla `/agente` (chat). Las respuestas de saldo NO incluyen ejemplos de movimientos (decisión de Carlos), salvo que se pidan.
-- Plan: más herramientas (sin conciliar, Zelles sin identificar, utilidad del mes, top deudores/acreedores), modo razonamiento con `deepseek-r1:8b` para revisar conciliaciones/inconsistencias, y opción de escalar a la API de Claude para análisis complejo (el modelo local pequeño NO iguala el análisis de un modelo de frontera).
+- `web/lib/agent.ts`: orquestador. Nivel 1, solo lectura. NUNCA inventa cifras (todo número viene de herramientas deterministas en `web/lib/agent-tools.ts`). Pantalla `/agente`.
+- **Modo normal (qwen3:8b, rápido)** — tool-calling. Herramientas (tools): `consultar_saldo_cliente`, `que_falta_conciliar`, `zelles_sin_identificar`, `utilidad_mesa` (total), `utilidad_periodo` (día o mes; ej. "utilidad del 8 de junio"), `estado_conciliacion` (% Binance), `buscar_duplicados`, `top_deudores_acreedores`. El cuadro de texto SIEMPRE usa este modo.
+- **Modo razonamiento (deepseek-r1:8b, lento)** — botón "🔍 Revisar inconsistencias". NO usa tools: pre-consulta los posibles problemas (duplicados + conciliaciones que no cuadran + estado) y se los da a R1 para que distinga errores reales de casos normales. `askReasoning` en agent.ts.
+- Respuestas de saldo SIN ejemplos de movimientos (decisión de Carlos), salvo que se pidan. Prompt refuerza no agregar datos fuera del resultado de la herramienta (modelos 8B a veces adornan; las cifras centrales son correctas y auditables con "Ver datos consultados").
+- Ambos modelos descargados (`ollama list`: qwen3:8b, deepseek-r1:8b, ~5.2 GB c/u). Para análisis complejo (tipo el de estas sesiones) se escala a la API de Claude — el local pequeño NO iguala a un modelo de frontera.
+
+## Cómo corre el agente (RAM en la Mac mini M4 16GB)
+
+- Cadena local (nada sale a internet): app web (Next, ~220 MB) → orquestador (agent.ts) → herramientas → PostgreSQL (los números) → Ollama (puerto 11434, ~20 MB en reposo) → el modelo.
+- Los modelos viven en disco; al preguntar, Ollama carga ~5.3 GB a la **memoria unificada** (corre 100% en la GPU del M4). Primera pregunta en frío ~6 s; luego ~1 s mientras está caliente. Se descarga solo a los ~5 min (keep_alive por defecto).
+- Presupuesto: macOS+apps 4-6 GB, Postgres+app <1 GB, un modelo ~5.5 GB → cabe con UN modelo a la vez. Los dos juntos no caben cómodos; Ollama carga uno y al cambiar de modo descarga el otro.
+- Comandos útiles: `ollama ps` (qué está cargado), `ollama stop <modelo>`, `ollama run qwen3:8b "..."`. Ajustar permanencia: `keep_alive` por petición o `OLLAMA_KEEP_ALIVE` global (no configurado aún; queda por defecto 5 min).
 
 ## Decisiones confirmadas (no re-preguntar)
 
@@ -88,7 +96,39 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 
 ## Siguiente paso (a elegir)
 
-1. Más herramientas para el agente (sin conciliar, Zelles sin identificar, utilidad del mes, top deudores/acreedores) + modo razonamiento deepseek-r1.
-2. Extender conciliación a bancos Bs (EDO CTA BS), cash y Zelle (cerrar Fase 3).
-3. Conciliación del año pasado (misma estructura).
-4. Cierre diario + comisiones (Jorge/Mileng/operador) + ajuste Bs (revisar el Ajuste BS = 1.000 que no netea).
+1. Extender conciliación a bancos Bs (EDO CTA BS), cash y Zelle (cerrar Fase 3).
+2. Conciliación del año pasado (misma estructura; el cliente 2025 debe quedar en 0 al consolidar).
+3. Cierre diario + comisiones (Jorge/Mileng/operador) + ajuste Bs (revisar el Ajuste BS = 1.000 que no netea).
+4. Más capacidades del agente (más tools, o escalar a la API de Claude para análisis complejo).
+5. Fase 6: captura de operaciones desde la app + app como fuente de verdad + servicio 24/7.
+
+## Cómo retomar en una conversación nueva
+
+Abrir desde `/Users/pc/Documents/Kw2`. Prompt sugerido:
+
+```text
+Quiero continuar el proyecto KW2 desde este workspace.
+
+Primero NO hagas cambios. Lee en orden:
+- KW2/README.md
+- KW2/05-implementacion/estado-proyecto.md   (resume TODO el estado actual)
+- Todos los documentos dentro de KW2/
+- compose.yaml, infra/postgres/init/, infra/postgres/tests/
+- importer/src/
+- web/AGENTS.md y web/lib/ (agent.ts, agent-tools.ts, reconciliation.ts, reports.ts, manual.ts, corrections.ts)
+
+Luego comprueba: git status, Docker/PostgreSQL (docker compose ps), migraciones aplicadas, y que Ollama tenga qwen3:8b y deepseek-r1:8b (ollama list).
+
+Resume: (1) negocio, (2) qué está construido, (3) decisiones confirmadas, (4) pendiente, (5) siguiente paso recomendado.
+
+Reglas que NO debes romper:
+- No modificar el Google Sheet desde la app; Carlos corrige a mano y se reimporta. Lo único que se escribe en el Sheet es la columna kw2_id vía Apps Script.
+- No inventes reglas. Distingue: operación económica, deuda/obligación, movimiento de fondos, conciliación, cierre diario, corrección propuesta.
+- kw2_id es el ancla estable de cada fila; reimport-movimientos.ts es el reimport seguro que preserva conciliaciones.
+- Solo Ajuste BS, Binance P2P y TS son conceptos de control (kind='system', deben dar 0); el resto son clientes reales.
+- Utilidad de la mesa = Comisiones − Gastos.
+- El agente es Nivel 1 (solo lectura), responde con datos de herramientas; en respuestas de saldo no incluye ejemplos de movimientos salvo que se pidan. El cuadro de texto usa qwen3 (modo normal); el botón "Revisar inconsistencias" usa deepseek-r1.
+- Las sugerencias Binance 0.99 son confiables para confirmar en bloque; las de baja confianza van por conciliación manual.
+
+El flujo de trabajo diario: editar el Sheet → botón "Sincronizar con el Sheet" en la app → revisar "Necesitan revisión" → conciliar en "Conciliación manual".
+```
