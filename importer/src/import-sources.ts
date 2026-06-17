@@ -129,6 +129,13 @@ async function main() {
   try {
     await db.query('BEGIN');
     for (const { sourceType, sourceAccount, records } of sources) {
+      // Liberar conciliaciones que referencian estas filas (si no, la FK bloquea
+      // el borrado). En Bs estas se reconstruyen después con reconstruct-bs-links.
+      await db.query(
+        `DELETE FROM reconciliations r USING external_transactions et
+         WHERE r.external_transaction_id = et.id AND et.source_type=$1 AND et.source_account=$2`,
+        [sourceType, sourceAccount],
+      );
       const del = await db.query(
         `DELETE FROM external_transactions WHERE source_type = $1 AND source_account = $2`,
         [sourceType, sourceAccount],

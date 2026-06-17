@@ -13,5 +13,11 @@ npx tsx src/import-movimientos.ts 2>/dev/null
 echo "== Reimport seguro (por kw2_id) =="
 npx tsx src/reimport-movimientos.ts 2>/dev/null
 
+echo "== Estados de cuenta (EDO CTA BS / CASH / Binance hoja) =="
+npx tsx src/import-sources.ts 2>/dev/null
+
+echo "== Conciliacion Bs (enlaces columna D) =="
+npx tsx src/reconstruct-bs-links.ts 2>/dev/null
+
 echo "== Verificacion de saldos =="
 npx tsx src/verify-model.ts 2>/dev/null

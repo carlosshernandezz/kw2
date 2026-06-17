@@ -105,7 +105,9 @@ async function main() {
     );
     const voidedWithRecon = voidRes.rows.filter((r: any) => Number(r.recon) > 0);
 
-    // Recalcular estado y marcar needs_review si una conciliacion ya no cuadra.
+    // Recalcular estado por monto SOLO para conciliaciones en USD (Binance).
+    // El estado de los movimientos Bs lo fija reconstruct-bs-links según el
+    // enlace de la columna D (no por monto, porque la comisión los hace diferir).
     const flagged = await db.query(
       `UPDATE fund_movements f SET status = CASE
          WHEN s.c = 0 THEN 'posted'
@@ -113,7 +115,7 @@ async function main() {
          ELSE 'needs_review' END, updated_at=now()
        FROM (SELECT fund_movement_id, COALESCE(SUM(allocated_native_amount),0) c
              FROM reconciliations WHERE status='confirmed' GROUP BY fund_movement_id) s
-       WHERE f.id=s.fund_movement_id AND f.source=$1 AND f.status<>'voided'
+       WHERE f.id=s.fund_movement_id AND f.source=$1 AND f.status<>'voided' AND f.medium <> 'bs'
        RETURNING f.id, f.status, f.kw2_id, f.usd_amount, s.c`,
       [SOURCE, TOL],
     );
