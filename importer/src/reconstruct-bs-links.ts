@@ -12,25 +12,31 @@ async function main() {
   const db = dbClient();
   await db.connect();
   try {
-    // operacion -> fund_movement Bs (solo las no ambiguas)
+    // Índices de movimientos Bs: por fila (row_number, único = exacto) y por
+    // número de operación (puede ser ambiguo; solo fallback).
     const fm = await db.query(
-      `SELECT (fm.source_payload->>'operacion')::numeric op, fm.id
+      `SELECT (fm.source_payload->>'row_number')::int rn, (fm.source_payload->>'operacion')::numeric op, fm.id
        FROM fund_movements fm JOIN accounts a ON a.id=fm.account_id
        WHERE fm.source='google_sheet_movimientos' AND a.medium='bs'
          AND NULLIF(fm.source_payload->>'operacion','') IS NOT NULL`,
     );
+    const byRow = new Map<number, number>();
     const byOp = new Map<number, number[]>();
     for (const r of fm.rows) {
+      byRow.set(Number(r.rn), r.id);
       const op = Number(r.op);
       (byOp.get(op) ?? byOp.set(op, []).get(op)!).push(r.id);
     }
 
-    // filas del banco con enlace numérico
+    // filas del banco con enlace (preferir enlace_row de la fórmula; si no, el número de operación)
     const bank = await db.query(
-      `SELECT id, native_amount::float8 amt, (raw_payload->>'enlace_movimientos')::numeric op
+      `SELECT id, native_amount::float8 amt,
+              NULLIF(raw_payload->>'enlace_row','')::int enlace_row,
+              CASE WHEN (raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$'
+                   THEN (raw_payload->>'enlace_movimientos')::numeric END op
        FROM external_transactions
        WHERE source_type='bank_statement' AND source_account='EDO CTA BS'
-         AND (raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$'`,
+         AND ((raw_payload->>'enlace_row') ~ '^[0-9]+$' OR (raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$')`,
     );
 
     await db.query('BEGIN');
@@ -41,10 +47,14 @@ async function main() {
     const skipped = { sin_match: 0, ambiguo: 0 };
     const fmReconciled = new Set<number>();
     for (const b of bank.rows) {
-      const ids = byOp.get(Number(b.op));
-      if (!ids) { skipped.sin_match++; continue; }
-      if (ids.length > 1) { skipped.ambiguo++; continue; }
-      const fmId = ids[0];
+      // 1) por fila (exacto, sin ambigüedad). 2) fallback por número de operación.
+      let fmId: number | undefined = b.enlace_row != null ? byRow.get(Number(b.enlace_row)) : undefined;
+      if (fmId == null && b.op != null) {
+        const ids = byOp.get(Number(b.op));
+        if (ids && ids.length === 1) fmId = ids[0];
+        else if (ids && ids.length > 1) { skipped.ambiguo++; continue; }
+      }
+      if (fmId == null) { skipped.sin_match++; continue; }
       const r = await db.query(
         `INSERT INTO reconciliations (fund_movement_id, external_transaction_id, allocated_native_amount, status, confidence, reasons, confirmed_by, confirmed_at)
          VALUES ($1,$2,$3,'confirmed',1.0,$4,'sheet',now())

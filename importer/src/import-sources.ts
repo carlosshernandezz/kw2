@@ -4,7 +4,7 @@
 //   Edo cuenta binance      -> external_transactions source_type binance_statement
 // Misma estrategia que MOVIMIENTOS: cada corrida reemplaza el snapshot
 // anterior de esa fuente y queda auditada. No escribe en el Google Sheet.
-import { readRangeSerial, serialToDate } from './sheets.js';
+import { readRangeFormula, readRangeSerial, serialToDate } from './sheets.js';
 import { dbClient } from './db.js';
 
 type Record_ = {
@@ -23,10 +23,17 @@ function num(v: unknown): number | null {
 
 async function loadEdoCtaBs(): Promise<Record_[]> {
   const rows = await readRangeSerial("'EDO CTA BS'!A2:G100000");
+  // Columna D como fórmula: "=MOVIMIENTOS!O14596" -> fila 14596 (el enlace real).
+  const formulas = await readRangeFormula("'EDO CTA BS'!D2:D100000");
+  const enlaceRowOf = (i: number): number | null => {
+    const f = String(formulas[i]?.[0] ?? '');
+    const m = f.match(/MOVIMIENTOS!\s*O\s*(\d+)/i);
+    return m ? Number(m[1]) : null;
+  };
   return rows
-    .map((r, i) => ({ r, rowNumber: i + 2 }))
+    .map((r, i) => ({ r, rowNumber: i + 2, enlaceRow: enlaceRowOf(i) }))
     .filter(({ r }) => typeof r[1] === 'number' && String(r[0] ?? '').trim() !== '')
-    .map(({ r, rowNumber }) => {
+    .map(({ r, rowNumber, enlaceRow }) => {
       const credito = num(r[4]);
       const debito = num(r[5]);
       return {
@@ -42,6 +49,7 @@ async function loadEdoCtaBs(): Promise<Record_[]> {
           fecha: r[1],
           descripcion: r[2] ?? null,
           enlace_movimientos: r[3] ?? null,
+          enlace_row: enlaceRow,
           credito,
           debito,
           saldo: r[6] ?? null,
