@@ -41,6 +41,8 @@ function normalizeText(value: string): string {
     .trim();
 }
 
+const NENEKA_CONTROL_DESCRIPTIONS = new Set(['COMISION', 'A', 'SI', 'AJUSTE BS', 'TS']);
+
 function identityFor(bank: string, description: string): Identity | null {
   const normalizedBank = normalizeText(bank);
   const normalizedDescription = normalizeText(description);
@@ -52,6 +54,7 @@ function identityFor(bank: string, description: string): Identity | null {
   }
 
   if (normalizedBank === 'NENEKA') {
+    if (NENEKA_CONTROL_DESCRIPTIONS.has(normalizedDescription)) return null;
     return { kind: 'descripcion', key: normalizedDescription };
   }
 
@@ -64,6 +67,12 @@ function mapKey(bank: string, identity: Identity): string {
 
 function isCommissionRow(row: Statement): boolean {
   return normalizeText(row.description).startsWith('COMISION PAGO A PROVEEDORES');
+}
+
+function feeRate(account: string): number | null {
+  if (account === 'BDV VENISUM' || account === 'BDV SOLUCIONES') return 0.0025;
+  if (account === 'NENEKA') return 0.003;
+  return null;
 }
 
 // Devuelve una combinacion solo si es unica. Requiere al menos una fila cuya
@@ -208,8 +217,24 @@ async function main() {
           if (!row.identity) return false;
           return identityMap.get(mapKey(row.bank, row.identity))?.clientId === movement.clientId;
         });
-        const subset = uniqueSubset(movement.amount, compatible, owner, identityMap);
+        let subset = uniqueSubset(movement.amount, compatible, owner, identityMap);
         if (!subset) continue;
+
+        // Si el libro aun tiene solo el principal, adjuntar una fila real de
+        // comision cuando sea unica y coincida con la tasa del banco. La
+        // ausencia de fila implica 0% (incluye la excepcion NENEKA -> 0134).
+        const rate = feeRate(movement.account);
+        if (rate && subset.length === 1 && Math.abs(subset[0].amount - movement.amount) <= EPS) {
+          const expectedFee = subset[0].amount * rate;
+          const feeCandidates = sameContext.filter((row) => {
+            if (subset!.some((selected) => selected.id === row.id)) return false;
+            if (Math.abs(row.amount - expectedFee) > Math.max(EPS, expectedFee * 0.0001)) return false;
+            if (movement.account !== 'NENEKA') return isCommissionRow(row);
+            if (!row.identity) return false;
+            return identityMap.get(mapKey(row.bank, row.identity))?.clientId === movement.clientId;
+          });
+          if (feeCandidates.length === 1) subset = [...subset, feeCandidates[0]];
+        }
         candidates.push({
           ledger: movement,
           rows: subset,

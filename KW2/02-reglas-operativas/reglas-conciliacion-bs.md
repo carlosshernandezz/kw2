@@ -119,4 +119,6 @@ Decisión (17-jun-2026): el sistema **propondrá** la comisión como corrección
 
 - `importer/src/reconstruct-bs-links.ts`: espeja la conciliación de columna D (re-ejecutable, soporta 1:N). Corre dentro de `scripts/kw2-sync.sh` después de `import-sources`.
 - `importer/src/match-bs.ts`: aprende cédulas y descripciones desde conciliaciones confirmadas y genera sugerencias conservadoras para movimientos pendientes. No confirma automáticamente.
+- Pantalla `/conciliacion/bs`: muestra cobertura, sugerencias agrupadas por operación e identidades ambiguas con sus clientes históricos.
+- Al confirmar una sugerencia que incluye una fila real de comisión, la app propone corregir `Monto Bs` y `Tasa` en `MOVIMIENTOS`. La ausencia de fila de comisión en NENEKA implica 0%, cubriendo la excepción de transferencias a Banesco `0134` sin inventar datos.
 - Estado Bs: `reconciled` (tiene enlace) vs `posted`. "Pendiente real" = tiene operación y no está enlazado.
