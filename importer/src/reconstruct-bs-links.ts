@@ -75,9 +75,20 @@ async function main() {
     );
     await db.query('COMMIT');
 
+    // Desglose honesto del estado Bs.
+    const resumen = (await db.query(
+      `SELECT
+         count(*) FILTER (WHERE fm.status='reconciled') conciliados,
+         count(*) FILTER (WHERE fm.status<>'reconciled' AND NULLIF(fm.source_payload->>'operacion','') IS NOT NULL) pendientes_con_op,
+         count(*) FILTER (WHERE fm.status<>'reconciled' AND NULLIF(fm.source_payload->>'operacion','') IS NULL) sin_operacion_no_aplica
+       FROM fund_movements fm JOIN accounts a ON a.id=fm.account_id
+       WHERE fm.source='google_sheet_movimientos' AND a.medium='bs' AND fm.status<>'voided'`,
+    )).rows[0];
+
     console.log(`Enlaces Bs reconstruidos: ${linked} (filas del banco)`);
     console.log(`Movimientos Bs conciliados: ${fmReconciled.size}`);
-    console.log(`Omitidos: sin match ${skipped.sin_match}, ambiguos ${skipped.ambiguo}`);
+    console.log(`Omitidos al enlazar: sin match ${skipped.sin_match}, ambiguos ${skipped.ambiguo}`);
+    console.log(`Estado Bs -> conciliados: ${resumen.conciliados} | pendientes (con operación, sin enlazar): ${resumen.pendientes_con_op} | sin operación (no aplica columna D): ${resumen.sin_operacion_no_aplica}`);
   } catch (e: any) {
     await db.query('ROLLBACK');
     throw e;
