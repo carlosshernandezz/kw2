@@ -19,6 +19,27 @@ export type AmbiguousIdentity = {
   type: string;
   identity: string;
   clients: { id: number; name: string; evidence: number }[];
+  rule: BsIdentityRule | null;
+};
+
+export type BsIdentityRule = {
+  id: number;
+  strategy: 'preferred_client' | 'bridge_account';
+  clientId: number | null;
+  clientName: string | null;
+  requireExactAmount: boolean;
+  instruction: string;
+  reviewedBy: string;
+  reviewedAt: string;
+};
+
+export type AmbiguousIdentityOperation = {
+  reconciliationId: number;
+  date: string;
+  usdAmount: number | null;
+  bsAmount: number;
+  row: number | null;
+  kw2Id: string | null;
 };
 
 const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
@@ -88,7 +109,7 @@ export async function bsSuggestions(): Promise<BsSuggestion[]> {
 }
 
 export async function ambiguousIdentities(): Promise<AmbiguousIdentity[]> {
-  const rows = await pool.query(
+  const [rows, rulesResult] = await Promise.all([pool.query(
     `SELECT et.raw_payload->>'banco' bank, COALESCE(et.raw_payload->>'descripcion','') description,
             fm.client_id, c.name client
      FROM reconciliations r
@@ -98,7 +119,22 @@ export async function ambiguousIdentities(): Promise<AmbiguousIdentity[]> {
      WHERE r.status='confirmed' AND et.source_type='bank_statement'
        AND et.source_account='EDO CTA BS'
        AND et.raw_payload->>'banco' IN ('BDV VENISUM','BDV SOLUCIONES','NENEKA')`,
-  );
+  ), pool.query(
+    `SELECT r.id, r.bank, r.identity_type, r.identity_value, r.strategy, r.client_id,
+            c.name client_name, r.require_exact_amount, r.instruction,
+            r.reviewed_by, r.reviewed_at::text
+     FROM bs_identity_rules r
+     LEFT JOIN clients c ON c.id=r.client_id
+     WHERE r.status='active'`,
+  )]);
+  const rules = new Map<string, BsIdentityRule>();
+  for (const row of rulesResult.rows) {
+    rules.set(`${row.bank}|${row.identity_type}|${row.identity_value}`, {
+      id: Number(row.id), strategy: row.strategy, clientId: row.client_id == null ? null : Number(row.client_id),
+      clientName: row.client_name, requireExactAmount: row.require_exact_amount,
+      instruction: row.instruction, reviewedBy: row.reviewed_by, reviewedAt: row.reviewed_at,
+    });
+  }
   const grouped = new Map<string, { bank: string; type: string; identity: string; clients: Map<number, { id: number; name: string; evidence: number }> }>();
   for (const row of rows.rows) {
     const parsed = identity(row.bank, row.description);
@@ -112,8 +148,101 @@ export async function ambiguousIdentities(): Promise<AmbiguousIdentity[]> {
   }
   return [...grouped.values()]
     .filter((item) => item.clients.size > 1)
-    .map((item) => ({ bank: item.bank, type: item.type, identity: item.identity, clients: [...item.clients.values()].sort((a, b) => b.evidence - a.evidence) }))
+    .map((item) => ({
+      bank: item.bank, type: item.type, identity: item.identity,
+      clients: [...item.clients.values()].sort((a, b) => b.evidence - a.evidence),
+      rule: rules.get(`${item.bank}|${item.type}|${item.identity}`) ?? null,
+    }))
     .sort((a, b) => a.bank.localeCompare(b.bank) || a.identity.localeCompare(b.identity));
+}
+
+export async function saveBsIdentityRule(input: {
+  bank: string;
+  type: string;
+  identity: string;
+  strategy: 'preferred_client' | 'bridge_account';
+  clientId: number;
+  instruction: string;
+  reviewedBy?: string;
+}) {
+  if (!input.bank || !input.identity || !['cedula', 'descripcion'].includes(input.type)) throw new Error('Identidad inválida.');
+  if (!['preferred_client', 'bridge_account'].includes(input.strategy)) throw new Error('Estrategia inválida.');
+  if (!Number.isInteger(input.clientId) || input.clientId <= 0) throw new Error('Selecciona el cliente que debe aceptar la regla.');
+  if (input.instruction.trim().length < 12) throw new Error('Explica con más detalle cómo debe procesarse esta identidad.');
+
+  const client = await pool.connect();
+  const actor = input.reviewedBy?.trim() || ACTOR;
+  try {
+    await client.query('BEGIN');
+    const owner = (await client.query(`SELECT id, name FROM clients WHERE id=$1`, [input.clientId])).rows[0];
+    if (!owner) throw new Error('El cliente seleccionado no existe.');
+    const saved = (await client.query(
+      `INSERT INTO bs_identity_rules
+         (bank, identity_type, identity_value, strategy, client_id, require_exact_amount,
+          instruction, reviewed_by)
+       VALUES ($1,$2,$3,$4,$5,true,$6,$7)
+       ON CONFLICT (bank, identity_type, identity_value) DO UPDATE SET
+         strategy=EXCLUDED.strategy, client_id=EXCLUDED.client_id,
+         require_exact_amount=EXCLUDED.require_exact_amount,
+         instruction=EXCLUDED.instruction, status='active', reviewed_by=EXCLUDED.reviewed_by,
+         reviewed_at=now(), updated_at=now()
+       RETURNING id`,
+      [input.bank, input.type, input.identity, input.strategy, input.clientId, input.instruction.trim(), actor],
+    )).rows[0];
+    await client.query(
+      `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state, reason)
+       VALUES ('user',$1,'review_bs_identity','bs_identity_rule',$2,$3,$4)`,
+      [actor, String(saved.id), JSON.stringify({ ...input, clientName: owner.name, requireExactAmount: true }), input.instruction.trim()],
+    );
+    await client.query('COMMIT');
+    return { id: Number(saved.id), clientName: owner.name };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function ambiguousIdentityOperations(
+  bank: string,
+  type: string,
+  identityValue: string,
+  clientId: number,
+): Promise<AmbiguousIdentityOperation[]> {
+  const rows = await pool.query(
+    `SELECT r.id reconciliation_id,
+            fm.effective_at::date::text date,
+            fm.usd_amount::float8 usd_amount,
+            fm.native_amount::float8 bs_amount,
+            (fm.source_payload->>'row_number')::int row_number,
+            fm.kw2_id,
+            COALESCE(et.raw_payload->>'descripcion','') description
+     FROM reconciliations r
+     JOIN external_transactions et ON et.id=r.external_transaction_id
+     JOIN fund_movements fm ON fm.id=r.fund_movement_id
+     WHERE r.status='confirmed'
+       AND et.source_type='bank_statement'
+       AND et.source_account='EDO CTA BS'
+       AND et.raw_payload->>'banco'=$1
+       AND fm.client_id=$2
+     ORDER BY fm.effective_at, (fm.source_payload->>'row_number')::int, r.id`,
+    [bank, clientId],
+  );
+
+  return rows.rows
+    .filter((row: any) => {
+      const parsed = identity(bank, row.description);
+      return parsed?.type === type && parsed.value === identityValue;
+    })
+    .map((row: any) => ({
+      reconciliationId: Number(row.reconciliation_id),
+      date: row.date,
+      usdAmount: row.usd_amount == null ? null : Number(row.usd_amount),
+      bsAmount: Number(row.bs_amount),
+      row: row.row_number == null ? null : Number(row.row_number),
+      kw2Id: row.kw2_id,
+    }));
 }
 
 async function createCommissionCorrections(client: any, movementId: number, actor: string) {

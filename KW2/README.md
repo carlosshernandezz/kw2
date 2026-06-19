@@ -22,6 +22,10 @@ Esta carpeta organiza la documentacion del redisenio operativo y tecnico de KW2.
 - `05-implementacion/estado-proyecto.md`
 - `05-implementacion/prompt-continuar-nueva-conversacion.md`
 
+Para retomar el proyecto, comenzar por `05-implementacion/estado-proyecto.md`:
+contiene el estado operativo y técnico actualizado, las migraciones aplicadas,
+las pantallas disponibles y los riesgos pendientes.
+
 ## Convencion
 
 Los documentos deben escribirse como especificaciones vivas:

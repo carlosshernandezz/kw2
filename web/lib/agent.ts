@@ -6,6 +6,7 @@ import { needsReview } from './manual';
 
 const OLLAMA = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
 const MODEL = process.env.KW2_AGENT_MODEL ?? 'qwen3:8b';
+const TIME_ZONE = 'America/Caracas';
 
 const SYSTEM = `Eres el asistente de solo lectura de la mesa de cambio KW2. Respondes SIEMPRE en español, en 2-4 frases, directo.
 Reglas:
@@ -130,12 +131,41 @@ async function runTool(name: string, args: any): Promise<unknown> {
 }
 
 const stripThink = (s: string) => s.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+const formatUsd = (value: number) => value.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function caracasDate(dayOffset = 0) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: TIME_ZONE,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const value = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+  const date = new Date(Date.UTC(value('year'), value('month') - 1, value('day') + dayOffset));
+  return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() };
+}
+
+async function deterministicRelativeDateAnswer(question: string): Promise<AgentResult | null> {
+  const normalized = question.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  if (!/utilidad|ganamos|ganancia/.test(normalized)) return null;
+  const offset = /\bayer\b/.test(normalized) ? -1 : /\bhoy\b/.test(normalized) ? 0 : null;
+  if (offset == null) return null;
+
+  const date = caracasDate(offset);
+  const result = await utilidadPeriodo(date.year, date.month, date.day);
+  return {
+    answer: `La utilidad de ${offset === -1 ? 'ayer' : 'hoy'} (${result.periodo}) fue USD ${formatUsd(result.utilidad_usd)}. Se registraron USD ${formatUsd(result.comisiones_cobradas_usd)} en comisiones cobradas y USD ${formatUsd(result.gastos_pagados_usd)} en gastos pagados.`,
+    toolCalls: [{ name: 'utilidad_periodo', args: { anio: date.year, mes: date.month, dia: date.day }, result }],
+  };
+}
 
 export type AgentResult = { answer: string; toolCalls: { name: string; args: unknown; result: unknown }[] };
 
 export async function askAgent(question: string): Promise<AgentResult> {
+  const deterministic = await deterministicRelativeDateAnswer(question);
+  if (deterministic) return deterministic;
+
+  const today = caracasDate();
   const messages: any[] = [
-    { role: 'system', content: SYSTEM },
+    { role: 'system', content: `${SYSTEM}\nLa fecha de hoy en ${TIME_ZONE} es ${today.day}/${today.month}/${today.year}. Resuelve cualquier fecha relativa usando exclusivamente esta referencia.` },
     { role: 'user', content: question },
   ];
   const toolCalls: AgentResult['toolCalls'] = [];

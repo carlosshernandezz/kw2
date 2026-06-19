@@ -122,3 +122,13 @@ Decisión (17-jun-2026): el sistema **propondrá** la comisión como corrección
 - Pantalla `/conciliacion/bs`: muestra cobertura, sugerencias agrupadas por operación e identidades ambiguas con sus clientes históricos.
 - Al confirmar una sugerencia que incluye una fila real de comisión, la app propone corregir `Monto Bs` y `Tasa` en `MOVIMIENTOS`. La ausencia de fila de comisión en NENEKA implica 0%, cubriendo la excepción de transferencias a Banesco `0134` sin inventar datos.
 - Estado Bs: `reconciled` (tiene enlace) vs `posted`. "Pendiente real" = tiene operación y no está enlazado.
+- La tarjeta `Pendientes reales` abre `/conciliacion/bs/pendientes`, donde se
+  comparan movimientos Bs del libro y filas compatibles de `EDO CTA BS`. Solo
+  se permite conciliar si banco, fecha y dirección coinciden; la estructura
+  puede ser 1:1, N:1 o 1:N y admite la comisión bancaria conocida.
+- Una identidad ambigua puede recibir una regla explícita revisada por un operador:
+  - `preferred_client`: desde ahora corresponde al cliente seleccionado.
+  - `bridge_account`: es una cuenta puente y solo puede sugerirse para el cliente
+    seleccionado cuando el monto coincide exactamente.
+- La regla conserva la instrucción, fecha y responsable. El matcher la consulta
+  antes que la evidencia histórica; el Google Sheet continúa siendo manual.

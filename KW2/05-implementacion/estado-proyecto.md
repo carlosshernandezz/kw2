@@ -1,6 +1,6 @@
 # KW2 - Estado Del Proyecto
 
-Actualizado: 16 de junio de 2026.
+Actualizado: 18 de junio de 2026, 17:55 (America/Caracas).
 
 Documento vivo para retomar el trabajo desde cualquier maquina o sesion nueva. Leerlo junto con el resto de `KW2/` da el contexto completo.
 
@@ -11,9 +11,9 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 ## Fases y dónde estamos
 
 - **0 Servidor local**: Docker + PostgreSQL 17 + Ollama. ✅
-- **1 Documentación + modelo**: docs en `KW2/`, migraciones 001-006. ✅
+- **1 Documentación + modelo**: docs en `KW2/`, migraciones 001-007. ✅
 - **2 App espejo**: importa el Sheet, reproduce saldos (372/372 clientes, 17/17 cuentas), ID estable `kw2_id`, reimport seguro. ✅
-- **3 Conciliación asistida**: BINANCE CH completo (auto + manual + correcciones + needs_review + fees). Faltan: bancos Bs (EDO CTA BS), cash, Zelle, y el **año pasado**. 🔶
+- **3 Conciliación asistida**: BINANCE CH completo. Bancos Bs ya tienen reconstrucción histórica, matcher por identidad, revisión de sugerencias, conciliación manual, reglas revisadas y correcciones de comisión. Faltan: importar/actualizar diariamente `EDO CTA BS`, cash, Zelle y el **año pasado**. 🔶
 - **4 Reportes/dashboard**: saldos de clientes, saldos por cuenta, KPIs, utilidad, ficha de cliente con evidencia. ✅ (falta cierre diario, comisiones operador/Jorge/Mileng, ajuste Bs)
 - **5 Agente IA local**: Q&A solo lectura (8 herramientas) sobre qwen3:8b + modo razonamiento con deepseek-r1:8b. ✅
 - **6 Operación principal**: captura desde la app, app como fuente de verdad, 24/7. ⬜
@@ -21,7 +21,7 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 ## Infraestructura
 
 - PostgreSQL 17 en Docker (`compose.yaml`, contenedor `kw2-postgres`, 127.0.0.1:5432). Arrancar: `docker compose up -d`.
-- Migraciones en `infra/postgres/init/` (001-006), se aplican con `psql`. Tablas: clients, client_aliases, operators, accounts, operations, obligations, fund_movements, obligation_allocations, external_transactions, reconciliations, daily_account_closures, audit_events, sheet_corrections (004), reconciliation_marks (005). 006 = `fund_movements.kw2_id`.
+- Migraciones en `infra/postgres/init/` (001-007), se aplican con `psql`. Tablas: clients, client_aliases, operators, accounts, operations, obligations, fund_movements, obligation_allocations, external_transactions, reconciliations, daily_account_closures, audit_events, sheet_corrections (004), reconciliation_marks (005), `fund_movements.kw2_id` (006) y `bs_identity_rules` (007).
 - Importadores en `importer/src/` (Node+TS, service account Google solo-lectura, clave en `google-credentials.json` fuera de Git).
 - App web en `web/` (Next.js 16 + Tailwind, sin login, localhost:3000, actor `app_web`). Correr: `cd web && npm run dev`.
 - Ollama con `qwen3:8b` (`ollama pull qwen3:8b`). El agente llama `http://127.0.0.1:11434`.
@@ -35,6 +35,22 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 - `reimport-movimientos.ts`: **reimport SEGURO** por kw2_id (upsert): inserta nuevas, actualiza cambiadas conservando ID y conciliaciones, marca 'voided' las borradas, y deja 'needs_review' las conciliaciones que ya no cuadran tras una edición. Detecta y NO procesa kw2_id duplicados. Reemplazó al viejo `transform-movimientos.ts` (obsoleto).
 - `verify-model.ts`: cuadre fund_movements vs DATA en vivo (372/372, 17/17 cuando no se está editando el Sheet).
 - Otros: `import-sources.ts` (EDO CTA BS/CASH/Binance), `import-binance-file.ts <xlsx>`, `import-zelle-aliases.ts`.
+
+## Conciliación bancaria Bs
+
+- Reglas completas: `KW2/02-reglas-operativas/reglas-conciliacion-bs.md`.
+- `reconstruct-bs-links.ts` reconstruye los enlaces históricos de columna D.
+- `match-bs.ts` aprende identidades confirmadas y genera sugerencias conservadoras por banco, fecha, dirección, cliente y monto. VENISUM/SOLUCIONES extraen cédula; NENEKA usa descripción normalizada.
+- Pantalla `/conciliacion/bs`: cobertura, sugerencias, comisión bancaria, detalle clicable de evidencia histórica e identidades ambiguas.
+- Cada nombre histórico es clicable y muestra fecha, USD, Bs, fila de MOVIMIENTOS y kw2_id de todas las conciliaciones que forman su evidencia.
+- La tarjeta `Pendientes reales` enlaza a `/conciliacion/bs/pendientes`: dos paneles (MOVIMIENTOS vs EDO CTA BS), filtros, selección y conciliación manual 1:1/N:1/1:N. Exige mismo banco, fecha y dirección; admite comisión conocida y propone correcciones de `Monto Bs`/`Tasa`.
+- Estado al 18-jun-2026: 5.962 movimientos Bs conciliados, 19 pendientes reales, 0 sugerencias. La bandeja muestra 0 filas compatibles del estado porque todavía no se ha importado/transcrito el `EDO CTA BS` correspondiente a esos movimientos del 18-jun.
+- Migración 007 crea `bs_identity_rules`. En una identidad ambigua, `Marcar como revisado` obliga a elegir:
+  - `preferred_client`: cliente esperado desde ahora.
+  - `bridge_account`: cuenta puente, solo habilitada para el cliente indicado y monto exacto.
+- La explicación del operador se guarda en PostgreSQL, audit_events y las razones de futuras sugerencias. La regla revisada tiene prioridad sobre la historia; nunca modifica conciliaciones anteriores ni escribe el Sheet.
+- Ejemplos conversados pero **todavía no guardados**: cédula `10335114` como Karen (Jochiwi) desde ahora; cédula `27187469` como cuenta puente, solo CJHP con monto exacto. Deben confirmarse mediante el formulario.
+- Comisiones: NENEKA 0,3%; VENISUM/SOLUCIONES 0,25%. La app solo genera correcciones propuestas para el Sheet.
 
 ## ID estable kw2_id (clave del sistema)
 
@@ -69,6 +85,13 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 - **Modo razonamiento (deepseek-r1:8b, lento)** — botón "🔍 Revisar inconsistencias". NO usa tools: pre-consulta los posibles problemas (duplicados + conciliaciones que no cuadran + estado) y se los da a R1 para que distinga errores reales de casos normales. `askReasoning` en agent.ts.
 - Respuestas de saldo SIN ejemplos de movimientos (decisión de Carlos), salvo que se pidan. Prompt refuerza no agregar datos fuera del resultado de la herramienta (modelos 8B a veces adornan; las cifras centrales son correctas y auditables con "Ver datos consultados").
 - Ambos modelos descargados (`ollama list`: qwen3:8b, deepseek-r1:8b, ~5.2 GB c/u). Para análisis complejo (tipo el de estas sesiones) se escala a la API de Claude — el local pequeño NO iguala a un modelo de frontera.
+- Las consultas relativas de utilidad (`hoy`, `ayer`) ya no dependen del LLM: `agent.ts` resuelve la fecha en `America/Caracas`, consulta PostgreSQL y redacta una respuesta determinista. Verificado el 18-jun: `ayer` = 17-jun-2026.
+
+## Acceso local para los tres operadores
+
+- Next.js permite los orígenes de desarrollo `127.0.0.1` y `192.168.68.54` en `web/next.config.ts`.
+- En la red de la oficina: `http://192.168.68.54:3000` mientras la Mac mini, Docker y `npm run dev` estén activos.
+- La app todavía no tiene autenticación ni roles. No exponer el puerto 3000 directamente a Internet. Próximo paso recomendado para acceso remoto: Tailscale; despliegue formal posterior: Vercel + PostgreSQL administrado + autenticación.
 
 ## Cómo corre el agente (RAM en la Mac mini M4 16GB)
 
@@ -94,13 +117,17 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 - Secretos (`.env`, `google-credentials.json`): a mano (AirDrop/USB), nunca por Git.
 - Base de datos: pg_dump/restore (las decisiones en base no se reproducen del Sheet). Scripts: `scripts/kw2-save.sh` (al salir) y `scripts/kw2-load.sh` (al llegar). Futuro: Tailscale cuando la Mac mini quede fija.
 
-## Siguiente paso (a elegir)
+## Siguiente paso recomendado
 
-1. Extender conciliación a bancos Bs (EDO CTA BS), cash y Zelle (cerrar Fase 3).
-2. Conciliación del año pasado (misma estructura; el cliente 2025 debe quedar en 0 al consolidar).
-3. Cierre diario + comisiones (Jorge/Mileng/operador) + ajuste Bs (revisar el Ajuste BS = 1.000 que no netea).
-4. Más capacidades del agente (más tools, o escalar a la API de Claude para análisis complejo).
-5. Fase 6: captura de operaciones desde la app + app como fuente de verdad + servicio 24/7.
+1. Importar/transcribir el `EDO CTA BS` del 18-jun y validar la conciliación manual de los 19 pendientes con filas reales.
+2. Guardar desde la interfaz las reglas confirmadas de `10335114` y `27187469`; ejecutar `match-bs.ts` y revisar las nuevas sugerencias antes de confirmar.
+3. Añadir autenticación y usuarios individuales antes de permitir que los tres operadores tomen decisiones desde la app; conservar actor real en auditoría.
+4. Extender conciliación a cash y Zelle, y luego consolidar el año pasado (cliente 2025 debe quedar en 0).
+5. Cierre diario + comisiones Jorge/Mileng/operador + ajuste Bs.
+
+## Cambios locales pendientes de versionar
+
+Al cerrar esta sesión existen cambios sin commit en conciliación Bs, agente y acceso LAN. Revisar `git status`; incluyen migración 007, `bs-manual.ts`, APIs/pantalla de pendientes, reglas de identidad, detalle de evidencia histórica, fechas deterministas del agente y `allowedDevOrigins`.
 
 ## Cómo retomar en una conversación nueva
 
@@ -115,9 +142,10 @@ Primero NO hagas cambios. Lee en orden:
 - Todos los documentos dentro de KW2/
 - compose.yaml, infra/postgres/init/, infra/postgres/tests/
 - importer/src/
-- web/AGENTS.md y web/lib/ (agent.ts, agent-tools.ts, reconciliation.ts, reports.ts, manual.ts, corrections.ts)
+- web/AGENTS.md y web/lib/ (agent.ts, agent-tools.ts, reconciliation.ts, bs-reconciliation.ts, bs-manual.ts, reports.ts, manual.ts, corrections.ts)
+- web/app/conciliacion/bs/ y web/app/api/bs/
 
-Luego comprueba: git status, Docker/PostgreSQL (docker compose ps), migraciones aplicadas, y que Ollama tenga qwen3:8b y deepseek-r1:8b (ollama list).
+Luego comprueba: git status, Docker/PostgreSQL (docker compose ps), migraciones aplicadas (debe incluir 007_bs_identity_rules), y que Ollama tenga qwen3:8b y deepseek-r1:8b (ollama list).
 
 Resume: (1) negocio, (2) qué está construido, (3) decisiones confirmadas, (4) pendiente, (5) siguiente paso recomendado.
 
@@ -129,6 +157,8 @@ Reglas que NO debes romper:
 - Utilidad de la mesa = Comisiones − Gastos.
 - El agente es Nivel 1 (solo lectura), responde con datos de herramientas; en respuestas de saldo no incluye ejemplos de movimientos salvo que se pidan. El cuadro de texto usa qwen3 (modo normal); el botón "Revisar inconsistencias" usa deepseek-r1.
 - Las sugerencias Binance 0.99 son confiables para confirmar en bloque; las de baja confianza van por conciliación manual.
+- La conciliación Bs usa identidad + banco + misma fecha + dirección + monto. Las reglas revisadas `preferred_client`/`bridge_account` prevalecen sobre la historia.
+- Estado Bs al 18-jun: 5962 conciliados, 19 pendientes, 0 sugerencias y 0 filas compatibles de EDO CTA hasta importar el estado del día.
 
 El flujo de trabajo diario: editar el Sheet → botón "Sincronizar con el Sheet" en la app → revisar "Necesitan revisión" → conciliar en "Conciliación manual".
 ```

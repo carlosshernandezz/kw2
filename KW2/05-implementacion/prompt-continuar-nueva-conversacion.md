@@ -18,8 +18,10 @@ Primero no hagas cambios. Lee:
 9. web/AGENTS.md
 10. web/lib/agent.ts
 11. web/lib/agent-tools.ts
-12. web/lib/reconciliation.ts
-13. web/lib/reports.ts
+12. web/lib/reconciliation.ts y web/lib/bs-reconciliation.ts
+13. web/lib/manual.ts y web/lib/bs-manual.ts
+14. web/lib/reports.ts
+15. web/app/conciliacion/bs/ y web/app/api/bs/
 
 Luego revisa:
 
@@ -66,6 +68,10 @@ Reglas confirmadas:
 - El agente local es Nivel 1, solo lectura.
 - El agente debe consultar herramientas deterministas y no inventar cifras.
 - En respuestas de saldo, no quiero que incluya ejemplos de movimientos salvo que yo lo pida.
+- En operaciones tipo A x B, A es lo que recibe KW2 y B lo que entrega.
+- Para Bs, banco, fecha y direccion deben coincidir. Las reglas revisadas de identidad tienen prioridad sobre la historia.
+- `preferred_client` significa cliente esperado desde ahora. `bridge_account` solo permite el cliente configurado con monto exacto.
+- Las explicaciones de revisión se guardan en `bs_identity_rules` y `audit_events`; no alteran conciliaciones anteriores.
 
 Contexto tecnico:
 
@@ -76,6 +82,14 @@ Contexto tecnico:
 - Modelo local principal: qwen3:8b
 - Para hablar directo con el modelo: ollama run qwen3:8b
 - Para probar API: usar POST a /api/generate; no se chatea abriendo esa URL en navegador.
+- Acceso en red local: http://192.168.68.54:3000 (sin autenticacion todavia; no exponer a Internet).
+
+Estado Bs al 18-jun-2026:
+
+- 5962 conciliados, 19 pendientes reales, 0 sugerencias.
+- `/conciliacion/bs/pendientes` funciona, pero muestra 0 filas de EDO CTA compatibles hasta importar/transcribir el estado del dia.
+- La migracion 007 (`bs_identity_rules`) ya fue aplicada a la base local.
+- Los ejemplos 10335114 -> Karen y 27187469 -> cuenta puente/CJHP fueron discutidos, pero no guardados; deben confirmarse desde la interfaz.
 
 Antes de proponer cambios, dime si entiendes el estado y hazme solo las preguntas indispensables.
 ```

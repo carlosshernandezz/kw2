@@ -29,8 +29,14 @@ type Statement = {
   description: string;
   identity: Identity | null;
 };
-type IdentityOwner = { clientId: number; client: string; evidence: number };
-type Suggestion = { ledger: Ledger; rows: Statement[]; confidence: number; identity: Identity; evidence: number };
+type IdentityOwner = {
+  clientId: number;
+  client: string;
+  evidence: number;
+  ruleStrategy?: 'preferred_client' | 'bridge_account';
+  ruleInstruction?: string;
+};
+type Suggestion = { ledger: Ledger; rows: Statement[]; confidence: number; identity: Identity; owner: IdentityOwner; evidence: number };
 
 function normalizeText(value: string): string {
   return value
@@ -151,6 +157,22 @@ async function main() {
       else ambiguousIdentities++;
     }
 
+    // Las reglas revisadas por un operador tienen prioridad sobre la historia.
+    // Una cuenta puente solo habilita el cliente indicado y exige monto 1:1.
+    const reviewedRules = await db.query(
+      `SELECT r.bank, r.identity_type, r.identity_value, r.strategy, r.client_id,
+              r.instruction, c.name client
+       FROM bs_identity_rules r JOIN clients c ON c.id=r.client_id
+       WHERE r.status='active'`,
+    );
+    for (const row of reviewedRules.rows) {
+      const identity: Identity = { kind: row.identity_type, key: row.identity_value };
+      identityMap.set(mapKey(row.bank, identity), {
+        clientId: Number(row.client_id), client: row.client, evidence: 0,
+        ruleStrategy: row.strategy, ruleInstruction: row.instruction,
+      });
+    }
+
     const ledgerResult = await db.query(
       `SELECT fm.id, fm.client_id, c.name client, a.name account,
               fm.effective_at::date::text date, fm.direction,
@@ -219,6 +241,8 @@ async function main() {
         });
         let subset = uniqueSubset(movement.amount, compatible, owner, identityMap);
         if (!subset) continue;
+        if (owner.ruleStrategy === 'bridge_account'
+          && (subset.length !== 1 || Math.abs(subset[0].amount - movement.amount) > EPS)) continue;
 
         // Si el libro aun tiene solo el principal, adjuntar una fila real de
         // comision cuando sea unica y coincida con la tasa del banco. La
@@ -240,6 +264,7 @@ async function main() {
           rows: subset,
           confidence: subset.length === 1 ? 0.99 : 0.98,
           identity,
+          owner,
           evidence: owner.evidence,
         });
       }
@@ -267,7 +292,8 @@ async function main() {
           REASON_TAG,
           `banco, fecha, direccion e identidad coinciden`,
           `${suggestion.identity.kind}: ${suggestion.identity.key}`,
-          `evidencia historica: ${suggestion.evidence}`,
+          suggestion.owner?.ruleStrategy ? `regla revisada: ${suggestion.owner.ruleStrategy}` : `evidencia historica: ${suggestion.evidence}`,
+          ...(suggestion.owner.ruleInstruction ? [`instruccion: ${suggestion.owner.ruleInstruction}`] : []),
           suggestion.rows.length === 1 ? 'monto exacto 1:1' : `suma exacta 1:${suggestion.rows.length}`,
         ];
         const result = await db.query(
