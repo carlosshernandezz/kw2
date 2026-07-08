@@ -25,6 +25,15 @@ DATABASE_URL=postgresql://...
 DATABASE_SSL=true
 ```
 
+Google Sheets en producción:
+
+```bash
+KW2_SHEET_ID=1bVhtBhS_cEDAnET8q5t4d4tT3pDE_bvEFD0oYjWaNWo
+GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'
+```
+
+`GOOGLE_SERVICE_ACCOUNT_JSON` puede ser el JSON completo de la service account o el mismo JSON codificado en base64. Debe tener acceso de solo lectura al Sheet.
+
 En local también funciona con:
 
 ```bash
@@ -69,4 +78,4 @@ Estado actual:
 - Base: Supabase `kw2-production`; usar **Transaction pooler** en `DATABASE_URL`, no Direct ni Session para Vercel.
 - Si la contraseña de Supabase tiene caracteres especiales (`*`, `.`, etc.), URL-encodear la contraseña antes de pegarla en `DATABASE_URL` (`*` -> `%2A`).
 - Basic Auth es temporal. El navegador recuerda credenciales por dominio y no hay logout; reemplazar por login real antes de operación con usuarios finales.
-- El botón de sincronización con Google Sheets solo ejecuta el script local en la Mac mini. En Vercel queda bloqueado con un mensaje claro hasta definir el flujo cloud.
+- El botón de sincronización con Google Sheets ejecuta el script local en la Mac mini. En Vercel ejecuta la sincronización cloud básica: `DATA` + snapshot `MOVIMIENTOS` + reimport seguro por `kw2_id` sobre Supabase.

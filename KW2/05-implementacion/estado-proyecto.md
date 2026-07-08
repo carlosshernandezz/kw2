@@ -136,7 +136,7 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 - Secretos (`.env`, `google-credentials.json`): a mano (AirDrop/USB), nunca por Git.
 - Base de datos: pg_dump/restore (las decisiones en base no se reproducen del Sheet). Scripts: `scripts/kw2-save.sh` (al salir) y `scripts/kw2-load.sh` (al llegar). Futuro: Tailscale cuando la Mac mini quede fija.
 - Producción cloud: Supabase es una copia importada para Vercel. Todavía no hay sincronización bidireccional automática entre la base local y cloud. Decisión pendiente: si el trabajo diario se muda a Supabase o si local sigue siendo maestro y se publica por dumps controlados.
-- El botón **"Sincronizar con el Sheet"** ejecuta `scripts/kw2-sync.sh` solo en local. En Vercel no puede ejecutar scripts de la Mac mini; hasta definir el flujo cloud, producción lee la copia de Supabase.
+- El botón **"Sincronizar con el Sheet"** ejecuta `scripts/kw2-sync.sh` en local. En Vercel ejecuta una sincronización cloud directa contra Google Sheets usando `GOOGLE_SERVICE_ACCOUNT_JSON`: importa `DATA`, toma snapshot de `MOVIMIENTOS` y hace reimport seguro por `kw2_id` en Supabase. Todavía no reconstruye todo el pipeline extendido local (`EDO CTA BS`, cash/Binance desde hojas auxiliares, sugerencias Bs); esa ampliación queda pendiente.
 
 ## Siguiente paso recomendado
 

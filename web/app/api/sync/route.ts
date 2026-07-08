@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { syncGoogleSheetCloud } from '@/lib/cloud-sync';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -9,14 +10,12 @@ export const maxDuration = 300;
 // Corre la sincronizacion local con el Sheet y devuelve su salida.
 export async function POST() {
   if (process.env.VERCEL) {
-    return NextResponse.json(
-      {
-        ok: false,
-        output:
-          'La sincronización directa con el Sheet todavía es local. En Vercel la app lee Supabase, pero no puede ejecutar scripts de la Mac mini. Próximo paso: definir si la sincronización cloud importará directo desde Google Sheets o si publicaremos dumps controlados desde la Mac.',
-      },
-      { status: 501 },
-    );
+    try {
+      const result = await syncGoogleSheetCloud();
+      return NextResponse.json(result);
+    } catch (error: any) {
+      return NextResponse.json({ ok: false, output: error.message ?? String(error) }, { status: 500 });
+    }
   }
 
   const root = path.resolve(process.cwd(), '..');
