@@ -78,4 +78,4 @@ Estado actual:
 - Base: Supabase `kw2-production`; usar **Transaction pooler** en `DATABASE_URL`, no Direct ni Session para Vercel.
 - Si la contraseña de Supabase tiene caracteres especiales (`*`, `.`, etc.), URL-encodear la contraseña antes de pegarla en `DATABASE_URL` (`*` -> `%2A`).
 - Basic Auth es temporal. El navegador recuerda credenciales por dominio y no hay logout; reemplazar por login real antes de operación con usuarios finales.
-- El botón de sincronización con Google Sheets ejecuta el script local en la Mac mini. En Vercel ejecuta la sincronización cloud básica: `DATA` + snapshot `MOVIMIENTOS` + reimport seguro por `kw2_id` sobre Supabase.
+- El botón de sincronización con Google Sheets ejecuta el script local en la Mac mini. En Vercel ejecuta sincronización cloud extendida: `DATA`, snapshot `MOVIMIENTOS`, reimport seguro por `kw2_id`, snapshots de `EDO CTA BS`/`EDO CTA CASH`/Binance, reconstrucción Bs desde enlaces del Sheet y sugerencias Bs por identidad histórica/reglas revisadas.

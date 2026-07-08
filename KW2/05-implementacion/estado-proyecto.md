@@ -136,20 +136,20 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 - Secretos (`.env`, `google-credentials.json`): a mano (AirDrop/USB), nunca por Git.
 - Base de datos: pg_dump/restore (las decisiones en base no se reproducen del Sheet). Scripts: `scripts/kw2-save.sh` (al salir) y `scripts/kw2-load.sh` (al llegar). Futuro: Tailscale cuando la Mac mini quede fija.
 - Producción cloud: Supabase es una copia importada para Vercel. Todavía no hay sincronización bidireccional automática entre la base local y cloud. Decisión pendiente: si el trabajo diario se muda a Supabase o si local sigue siendo maestro y se publica por dumps controlados.
-- El botón **"Sincronizar con el Sheet"** ejecuta `scripts/kw2-sync.sh` en local. En Vercel ejecuta una sincronización cloud directa contra Google Sheets usando `GOOGLE_SERVICE_ACCOUNT_JSON`: importa `DATA`, toma snapshot de `MOVIMIENTOS` y hace reimport seguro por `kw2_id` en Supabase. Todavía no reconstruye todo el pipeline extendido local (`EDO CTA BS`, cash/Binance desde hojas auxiliares, sugerencias Bs); esa ampliación queda pendiente.
+- El botón **"Sincronizar con el Sheet"** ejecuta `scripts/kw2-sync.sh` en local. En Vercel ejecuta una sincronización cloud directa contra Google Sheets usando `GOOGLE_SERVICE_ACCOUNT_JSON`: importa `DATA`, toma snapshot de `MOVIMIENTOS`, hace reimport seguro por `kw2_id`, reemplaza snapshots de `EDO CTA BS`, `EDO CTA CASH` y `Edo cuenta binance`, reconstruye conciliaciones Bs desde la fórmula `=MOVIMIENTOS!O...` y genera sugerencias Bs por identidad histórica/reglas revisadas. Sigue siendo solo lectura contra el Sheet.
 
 ## Siguiente paso recomendado
 
 1. Estabilizar producción: revisar `/`, `/dashboard`, `/conciliacion/bs`, `/conciliacion/binance`, `/operaciones/recibidas`, `/agente` y confirmar que todas leen Supabase sin errores.
 2. Reemplazar Basic Auth por login real: usuarios individuales, roles, sesiones, logout y `actor` correcto en auditoría.
-3. Definir flujo de sincronización cloud: quién es maestro (Sheet/local/Supabase), cuándo se reimporta y cómo se evita pisar decisiones de conciliación.
+3. Definir flujo de sincronización cloud: quién es maestro (Sheet/local/Supabase), cuándo se reimporta y cómo se evita pisar decisiones de conciliación de Binance/cash al reemplazar snapshots externos.
 4. Activar WhatsApp en producción: webhook Vercel, variables privadas, prueba real, almacenamiento durable de evidencias y luego OCR/interpretación/aprobación.
-5. Importar/transcribir `EDO CTA BS` pendiente y validar conciliación manual de Bs; guardar desde la interfaz las reglas confirmadas de `10335114` y `27187469` si Carlos las confirma.
+5. Validar en producción el nuevo sync extendido desde `/`: revisar conteos de `EDO CTA BS`, pendientes Bs, sugerencias Bs y reglas confirmadas como `10335114`/`27187469`.
 6. Extender conciliación a cash y Zelle, consolidar año pasado (`2025` debe quedar en 0) y construir cierre diario + comisiones Jorge/Mileng/operador + ajuste Bs.
 
 ## Cambios locales pendientes de versionar
 
-Antes de esta actualización de documentación, `git status` estaba limpio en `main...origin/main`. Los cambios pendientes actuales son documentación interna para reflejar Vercel/Supabase/Basic Auth y el plan de estabilización.
+Antes de esta actualización, `git status` estaba limpio en `main...origin/main`. Los cambios pendientes actuales agregan el pipeline extendido al sync cloud y actualizan esta documentación.
 
 ## Cómo retomar en una conversación nueva
 

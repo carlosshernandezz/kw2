@@ -4,6 +4,9 @@ import { pool } from './db';
 const SHEET_ID = process.env.KW2_SHEET_ID ?? '1bVhtBhS_cEDAnET8q5t4d4tT3pDE_bvEFD0oYjWaNWo';
 const SOURCE = 'google_sheet_movimientos';
 const TOL = 0.02;
+const BS_LINK_REASON = 'enlace EDO CTA BS columna D';
+const BS_MATCH_REASON = 'matcher Bs por identidad historica';
+const BS_EPS = 0.01;
 
 const SKIPPED_ACCOUNTS = new Set(['EEE', 'TTT', 'XXX']);
 const SKIPPED_CLIENT_IDS = new Set([334, 145]);
@@ -50,6 +53,44 @@ const COLUMNS = [
   'kw2_id',
 ] as const;
 
+type ExternalRecord = {
+  externalId: string;
+  effectiveAt: string;
+  direction: 'inflow' | 'outflow' | null;
+  currency: string | null;
+  amount: number | null;
+  description: string | null;
+  payload: Record<string, unknown>;
+};
+type Identity = { key: string; kind: 'cedula' | 'descripcion' };
+type Ledger = {
+  id: number;
+  clientId: number;
+  client: string;
+  account: string;
+  date: string;
+  direction: 'inflow' | 'outflow';
+  amount: number;
+  kw2Id: string;
+};
+type Statement = {
+  id: number;
+  bank: string;
+  date: string;
+  direction: 'inflow' | 'outflow';
+  amount: number;
+  description: string;
+  identity: Identity | null;
+};
+type IdentityOwner = {
+  clientId: number;
+  client: string;
+  evidence: number;
+  ruleStrategy?: 'preferred_client' | 'bridge_account';
+  ruleInstruction?: string;
+};
+type Suggestion = { ledger: Ledger; rows: Statement[]; confidence: number; identity: Identity; owner: IdentityOwner; evidence: number };
+
 function serviceAccountCredentials() {
   const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (!raw) {
@@ -87,8 +128,550 @@ function serialToDate(serial: number): string {
   return new Date(Math.round((serial - 25569) * 86400 * 1000)).toISOString().slice(0, 10);
 }
 
+function num(v: unknown): number | null {
+  return typeof v === 'number' ? v : null;
+}
+
+function normalizeText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim();
+}
+
+const NENEKA_CONTROL_DESCRIPTIONS = new Set(['COMISION', 'A', 'SI', 'AJUSTE BS', 'TS']);
+
+function identityFor(bank: string, description: string): Identity | null {
+  const normalizedBank = normalizeText(bank);
+  const normalizedDescription = normalizeText(description);
+  if (!normalizedDescription) return null;
+
+  if (normalizedBank === 'BDV VENISUM' || normalizedBank === 'BDV SOLUCIONES') {
+    const match = normalizedDescription.match(/(?:^|\s)V\s*0*([0-9]{6,10})(?:\s|$)/);
+    return match ? { kind: 'cedula', key: match[1] } : null;
+  }
+
+  if (normalizedBank === 'NENEKA') {
+    if (NENEKA_CONTROL_DESCRIPTIONS.has(normalizedDescription)) return null;
+    return { kind: 'descripcion', key: normalizedDescription };
+  }
+
+  return null;
+}
+
+function mapKey(bank: string, identity: Identity): string {
+  return `${normalizeText(bank)}|${identity.kind}|${identity.key}`;
+}
+
+function isCommissionRow(row: Statement): boolean {
+  return normalizeText(row.description).startsWith('COMISION PAGO A PROVEEDORES');
+}
+
+function feeRate(account: string): number | null {
+  if (account === 'BDV VENISUM' || account === 'BDV SOLUCIONES') return 0.0025;
+  if (account === 'NENEKA') return 0.003;
+  return null;
+}
+
+function uniqueSubset(target: number, rows: Statement[], owner: IdentityOwner, identityMap: Map<string, IdentityOwner>): Statement[] | null {
+  const pool = rows.slice(0, 14);
+  const solutions = new Map<string, Statement[]>();
+  const chosen: Statement[] = [];
+
+  const validIdentity = (row: Statement) => {
+    if (!row.identity) return false;
+    return identityMap.get(mapKey(row.bank, row.identity))?.clientId === owner.clientId;
+  };
+
+  const walk = (start: number, sum: number) => {
+    if (solutions.size > 1) return;
+    if (Math.abs(sum - target) <= BS_EPS) {
+      if (chosen.some(validIdentity)) {
+        const signature = chosen.map((r) => r.id).sort((a, b) => a - b).join(',');
+        solutions.set(signature, [...chosen]);
+      }
+      return;
+    }
+    if (sum > target + BS_EPS || chosen.length >= 6) return;
+    for (let i = start; i < pool.length; i++) {
+      const row = pool[i];
+      if (!validIdentity(row) && !isCommissionRow(row)) continue;
+      chosen.push(row);
+      walk(i + 1, sum + row.amount);
+      chosen.pop();
+    }
+  };
+
+  walk(0, 0);
+  return solutions.size === 1 ? [...solutions.values()][0] : null;
+}
+
+async function loadEdoCtaBs(): Promise<ExternalRecord[]> {
+  const rows = await readRange("'EDO CTA BS'!A2:G100000");
+  const formulas = await readRange("'EDO CTA BS'!D2:D100000", 'FORMULA');
+  const enlaceRowOf = (i: number): number | null => {
+    const f = String(formulas[i]?.[0] ?? '');
+    const m = f.match(/MOVIMIENTOS!\s*O\s*(\d+)/i);
+    return m ? Number(m[1]) : null;
+  };
+
+  return rows
+    .map((r, i) => ({ r, rowNumber: i + 2, enlaceRow: enlaceRowOf(i) }))
+    .filter(({ r }) => typeof r[1] === 'number' && String(r[0] ?? '').trim() !== '')
+    .map(({ r, rowNumber, enlaceRow }) => {
+      const credito = num(r[4]);
+      const debito = num(r[5]);
+      return {
+        externalId: String(rowNumber),
+        effectiveAt: serialToDate(r[1] as number),
+        direction: credito != null ? 'inflow' as const : debito != null ? 'outflow' as const : null,
+        currency: 'VES',
+        amount: credito ?? (debito != null ? Math.abs(debito) : null),
+        description: String(r[2] ?? '').trim() || null,
+        payload: {
+          row_number: rowNumber,
+          banco: String(r[0]).trim(),
+          fecha: r[1],
+          descripcion: r[2] ?? null,
+          enlace_movimientos: r[3] ?? null,
+          enlace_row: enlaceRow,
+          credito,
+          debito,
+          saldo: r[6] ?? null,
+        },
+      };
+    });
+}
+
+async function loadEdoCtaCash(): Promise<ExternalRecord[]> {
+  const rows = await readRange("'EDO CTA CASH'!A2:F100000");
+  return rows
+    .map((r, i) => ({ r, rowNumber: i + 2 }))
+    .filter(({ r }) => typeof r[0] === 'number')
+    .map(({ r, rowNumber }) => {
+      const abono = num(r[2]);
+      const cargo = num(r[3]);
+      return {
+        externalId: String(rowNumber),
+        effectiveAt: serialToDate(r[0] as number),
+        direction: abono != null ? 'inflow' as const : cargo != null ? 'outflow' as const : null,
+        currency: 'USD',
+        amount: abono ?? (cargo != null ? Math.abs(cargo) : null),
+        description: String(r[4] ?? '').trim() || null,
+        payload: {
+          row_number: rowNumber,
+          fecha: r[0],
+          operacion: r[1] ?? null,
+          abono,
+          cargo,
+          descripcion: r[4] ?? null,
+          ultimo_saldo: r[5] ?? null,
+        },
+      };
+    });
+}
+
+function parseBinanceTime(v: unknown): string | null {
+  if (typeof v === 'number') return new Date(Math.round((v - 25569) * 86400 * 1000)).toISOString();
+  const m = String(v ?? '').match(/^(\d{2})-(\d{2})-(\d{2}) (\d{2}:\d{2}:\d{2})$/);
+  if (!m) return null;
+  return `20${m[1]}-${m[2]}-${m[3]}T${m[4]}-04:00`;
+}
+
+async function loadBinance(): Promise<ExternalRecord[]> {
+  const rows = await readRange("'Edo cuenta binance'!A1:N100000");
+  const out: ExternalRecord[] = [];
+  for (const [i, r] of rows.entries()) {
+    const time = parseBinanceTime(r[3]);
+    const change = num(r[9]);
+    if (!time || change == null) continue;
+    out.push({
+      externalId: String(i + 1),
+      effectiveAt: time,
+      direction: change >= 0 ? 'inflow' : 'outflow',
+      currency: String(r[8] ?? '').trim() || null,
+      amount: Math.abs(change),
+      description: String(r[6] ?? '').trim() || null,
+      payload: {
+        row_number: i + 1,
+        user_id: r[2] ?? null,
+        time: r[3],
+        account: r[5] ?? null,
+        operation: r[6] ?? null,
+        coin: r[8] ?? null,
+        change,
+        remark: r[10] ?? null,
+      },
+    });
+  }
+  return out;
+}
+
 function isSystemClient(name: string) {
   return SYSTEM_CLIENT_NAMES.has(name.toLowerCase());
+}
+
+async function importExternalSources(db: any, output: string[]) {
+  const sources: { sourceType: string; sourceAccount: string; records: ExternalRecord[] }[] = [
+    { sourceType: 'bank_statement', sourceAccount: 'EDO CTA BS', records: await loadEdoCtaBs() },
+    { sourceType: 'cash_count', sourceAccount: 'EDO CTA CASH', records: await loadEdoCtaCash() },
+    { sourceType: 'binance_statement', sourceAccount: 'Edo cuenta binance', records: await loadBinance() },
+  ];
+  const batchId = `sources-${new Date().toISOString()}`;
+
+  output.push('== Estados externos ==');
+  for (const { sourceType, sourceAccount, records } of sources) {
+    await db.query(
+      `DELETE FROM reconciliations r USING external_transactions et
+       WHERE r.external_transaction_id = et.id AND et.source_type=$1 AND et.source_account=$2`,
+      [sourceType, sourceAccount],
+    );
+    const del = await db.query(
+      `DELETE FROM external_transactions WHERE source_type = $1 AND source_account = $2`,
+      [sourceType, sourceAccount],
+    );
+
+    const CHUNK = 500;
+    let inserted = 0;
+    for (let i = 0; i < records.length; i += CHUNK) {
+      const chunk = records.slice(i, i + CHUNK);
+      const values: unknown[] = [];
+      const tuples = chunk.map((rec, j) => {
+        const base = j * 8;
+        values.push(
+          sourceType,
+          sourceAccount,
+          rec.externalId,
+          rec.effectiveAt,
+          rec.direction,
+          rec.currency,
+          rec.amount,
+          JSON.stringify({ ...rec.payload, description: rec.description }),
+        );
+        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, '${batchId}')`;
+      });
+      const res = await db.query(
+        `INSERT INTO external_transactions
+           (source_type, source_account, external_id, effective_at, direction,
+            native_currency, native_amount, raw_payload, import_batch_id)
+         VALUES ${tuples.join(', ')}`,
+        values,
+      );
+      inserted += res.rowCount ?? 0;
+    }
+
+    await db.query(
+      `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state)
+       VALUES ('app_web', 'sync-google-sheet', 'import_source_snapshot', 'import_run', $1, $2)`,
+      [batchId, JSON.stringify({ source_type: sourceType, source_account: sourceAccount, deleted_previous: del.rowCount, inserted })],
+    );
+    output.push(`${sourceAccount}: ${inserted} filas (reemplazo ${del.rowCount} previas)`);
+  }
+}
+
+async function reconstructBsLinks(db: any, output: string[]) {
+  const fm = await db.query(
+    `SELECT (fm.source_payload->>'row_number')::int rn, (fm.source_payload->>'operacion')::numeric op, fm.id
+     FROM fund_movements fm JOIN accounts a ON a.id=fm.account_id
+     WHERE fm.source='google_sheet_movimientos' AND a.medium='bs'
+       AND NULLIF(fm.source_payload->>'operacion','') IS NOT NULL`,
+  );
+  const byRow = new Map<number, number>();
+  const byOp = new Map<number, number[]>();
+  for (const r of fm.rows) {
+    byRow.set(Number(r.rn), Number(r.id));
+    const op = Number(r.op);
+    (byOp.get(op) ?? byOp.set(op, []).get(op)!).push(Number(r.id));
+  }
+
+  const bank = await db.query(
+    `SELECT id, native_amount::float8 amt,
+            NULLIF(raw_payload->>'enlace_row','')::int enlace_row,
+            CASE WHEN (raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$'
+                 THEN (raw_payload->>'enlace_movimientos')::numeric END op
+     FROM external_transactions
+     WHERE source_type='bank_statement' AND source_account='EDO CTA BS'
+       AND ((raw_payload->>'enlace_row') ~ '^[0-9]+$' OR (raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$')`,
+  );
+
+  await db.query(`DELETE FROM reconciliations WHERE reasons @> $1::jsonb`, [JSON.stringify([BS_LINK_REASON])]);
+
+  let linked = 0;
+  const skipped = { sin_match: 0, ambiguo: 0 };
+  const fmReconciled = new Set<number>();
+  for (const b of bank.rows) {
+    let fmId: number | undefined = b.enlace_row != null ? byRow.get(Number(b.enlace_row)) : undefined;
+    if (fmId == null && b.op != null) {
+      const ids = byOp.get(Number(b.op));
+      if (ids && ids.length === 1) fmId = ids[0];
+      else if (ids && ids.length > 1) {
+        skipped.ambiguo++;
+        continue;
+      }
+    }
+    if (fmId == null) {
+      skipped.sin_match++;
+      continue;
+    }
+    const res = await db.query(
+      `INSERT INTO reconciliations (fund_movement_id, external_transaction_id, allocated_native_amount, status, confidence, reasons, confirmed_by, confirmed_at)
+       VALUES ($1,$2,$3,'confirmed',1.0,$4,'sheet',now())
+       ON CONFLICT (fund_movement_id, external_transaction_id) DO NOTHING`,
+      [fmId, b.id, Math.abs(Number(b.amt)) || 0.01, JSON.stringify([BS_LINK_REASON])],
+    );
+    if (res.rowCount) {
+      linked++;
+      fmReconciled.add(fmId);
+    }
+  }
+
+  await db.query(
+    `UPDATE fund_movements fm SET status='reconciled', updated_at=now()
+     FROM accounts a WHERE a.id=fm.account_id AND a.medium='bs' AND fm.source='google_sheet_movimientos'
+       AND fm.status<>'voided'
+       AND EXISTS (SELECT 1 FROM reconciliations r WHERE r.fund_movement_id=fm.id AND r.status='confirmed')`,
+  );
+  await db.query(
+    `UPDATE fund_movements fm SET status='posted', updated_at=now()
+     FROM accounts a WHERE a.id=fm.account_id AND a.medium='bs' AND fm.source='google_sheet_movimientos'
+       AND fm.status NOT IN ('voided')
+       AND NOT EXISTS (SELECT 1 FROM reconciliations r WHERE r.fund_movement_id=fm.id AND r.status='confirmed')`,
+  );
+
+  await db.query(
+    `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state)
+     VALUES ('app_web','sync-google-sheet','reconstruct_bs_reconciliations','account','EDO CTA BS',$1)`,
+    [JSON.stringify({ linked, movimientos_conciliados: fmReconciled.size, skipped })],
+  );
+
+  const resumen = (await db.query(
+    `SELECT
+       count(*) FILTER (WHERE fm.status='reconciled') conciliados,
+       count(*) FILTER (WHERE fm.status<>'reconciled' AND NULLIF(fm.source_payload->>'operacion','') IS NOT NULL) pendientes_con_op,
+       count(*) FILTER (WHERE fm.status<>'reconciled' AND NULLIF(fm.source_payload->>'operacion','') IS NULL) sin_operacion_no_aplica
+     FROM fund_movements fm JOIN accounts a ON a.id=fm.account_id
+     WHERE fm.source='google_sheet_movimientos' AND a.medium='bs' AND fm.status<>'voided'`,
+  )).rows[0];
+
+  output.push('== Conciliacion Bs desde enlaces del Sheet ==');
+  output.push(`Enlaces reconstruidos: ${linked} | movimientos conciliados: ${fmReconciled.size}`);
+  output.push(`Omitidos: sin match ${skipped.sin_match}, ambiguos ${skipped.ambiguo}`);
+  output.push(`Estado Bs: conciliados ${resumen.conciliados} | pendientes ${resumen.pendientes_con_op} | no aplica ${resumen.sin_operacion_no_aplica}`);
+}
+
+async function suggestBsMatches(db: any, output: string[]) {
+  const history = await db.query(
+    `SELECT et.raw_payload->>'banco' bank,
+            COALESCE(et.raw_payload->>'descripcion','') description,
+            fm.client_id, c.name client
+     FROM reconciliations r
+     JOIN external_transactions et ON et.id=r.external_transaction_id
+     JOIN fund_movements fm ON fm.id=r.fund_movement_id
+     JOIN clients c ON c.id=fm.client_id
+     WHERE r.status='confirmed'
+       AND et.source_type='bank_statement' AND et.source_account='EDO CTA BS'
+       AND et.raw_payload->>'banco' IN ('BDV VENISUM','BDV SOLUCIONES','NENEKA')`,
+  );
+
+  const owners = new Map<string, Map<number, IdentityOwner>>();
+  for (const row of history.rows) {
+    const identity = identityFor(row.bank, row.description);
+    if (!identity) continue;
+    const key = mapKey(row.bank, identity);
+    const candidates = owners.get(key) ?? new Map<number, IdentityOwner>();
+    const current = candidates.get(Number(row.client_id));
+    candidates.set(Number(row.client_id), {
+      clientId: Number(row.client_id),
+      client: row.client,
+      evidence: (current?.evidence ?? 0) + 1,
+    });
+    owners.set(key, candidates);
+  }
+
+  const identityMap = new Map<string, IdentityOwner>();
+  let ambiguousIdentities = 0;
+  for (const [key, candidates] of owners) {
+    if (candidates.size === 1) identityMap.set(key, [...candidates.values()][0]);
+    else ambiguousIdentities++;
+  }
+
+  const reviewedRules = await db.query(
+    `SELECT r.bank, r.identity_type, r.identity_value, r.strategy, r.client_id,
+            r.instruction, c.name client
+     FROM bs_identity_rules r JOIN clients c ON c.id=r.client_id
+     WHERE r.status='active'`,
+  );
+  for (const row of reviewedRules.rows) {
+    const identity: Identity = { kind: row.identity_type, key: row.identity_value };
+    identityMap.set(mapKey(row.bank, identity), {
+      clientId: Number(row.client_id),
+      client: row.client,
+      evidence: 0,
+      ruleStrategy: row.strategy,
+      ruleInstruction: row.instruction,
+    });
+  }
+
+  const ledgerResult = await db.query(
+    `SELECT fm.id, fm.client_id, c.name client, a.name account,
+            fm.effective_at::date::text date, fm.direction,
+            fm.native_amount::float8 amount, fm.kw2_id
+     FROM fund_movements fm
+     JOIN accounts a ON a.id=fm.account_id
+     JOIN clients c ON c.id=fm.client_id
+     WHERE fm.source='google_sheet_movimientos' AND a.medium='bs'
+       AND fm.status<>'voided'
+       AND NULLIF(fm.source_payload->>'operacion','') IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM reconciliations r
+         WHERE r.fund_movement_id=fm.id AND r.status IN ('confirmed','suggested')
+       )
+     ORDER BY fm.effective_at, fm.id`,
+  );
+  const ledger: Ledger[] = ledgerResult.rows.map((row: any) => ({
+    id: Number(row.id),
+    clientId: Number(row.client_id),
+    client: row.client,
+    account: row.account,
+    date: row.date,
+    direction: row.direction,
+    amount: Number(row.amount),
+    kw2Id: row.kw2_id,
+  }));
+
+  const statementResult = await db.query(
+    `SELECT et.id, et.raw_payload->>'banco' bank,
+            (et.effective_at AT TIME ZONE 'America/Caracas')::date::text date,
+            et.direction, et.native_amount::float8 amount,
+            COALESCE(et.raw_payload->>'descripcion','') description
+     FROM external_transactions et
+     WHERE et.source_type='bank_statement' AND et.source_account='EDO CTA BS'
+       AND et.direction IS NOT NULL AND et.native_amount IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM reconciliations r
+         WHERE r.external_transaction_id=et.id AND r.status IN ('confirmed','suggested')
+       )
+     ORDER BY et.effective_at, et.id`,
+  );
+  const statements: Statement[] = statementResult.rows.map((row: any) => ({
+    id: Number(row.id),
+    bank: row.bank,
+    date: row.date,
+    direction: row.direction,
+    amount: Number(row.amount),
+    description: row.description,
+    identity: identityFor(row.bank, row.description),
+  }));
+
+  const suggestions: Suggestion[] = [];
+  const usedStatements = new Set<number>();
+  for (const movement of ledger) {
+    const sameContext = statements.filter((row) =>
+      !usedStatements.has(row.id)
+      && row.bank === movement.account
+      && row.date === movement.date
+      && row.direction === movement.direction,
+    );
+
+    const identities = new Map<string, { identity: Identity; owner: IdentityOwner }>();
+    for (const row of sameContext) {
+      if (!row.identity) continue;
+      const owner = identityMap.get(mapKey(row.bank, row.identity));
+      if (owner?.clientId === movement.clientId) identities.set(mapKey(row.bank, row.identity), { identity: row.identity, owner });
+    }
+
+    const candidates: Suggestion[] = [];
+    for (const { identity, owner } of identities.values()) {
+      const compatible = sameContext.filter((row) => {
+        if (isCommissionRow(row)) return true;
+        if (!row.identity) return false;
+        return identityMap.get(mapKey(row.bank, row.identity))?.clientId === movement.clientId;
+      });
+      let subset = uniqueSubset(movement.amount, compatible, owner, identityMap);
+      if (!subset) continue;
+      if (owner.ruleStrategy === 'bridge_account'
+        && (subset.length !== 1 || Math.abs(subset[0].amount - movement.amount) > BS_EPS)) continue;
+
+      const rate = feeRate(movement.account);
+      if (rate && subset.length === 1 && Math.abs(subset[0].amount - movement.amount) <= BS_EPS) {
+        const expectedFee = subset[0].amount * rate;
+        const feeCandidates = sameContext.filter((row) => {
+          if (subset!.some((selected) => selected.id === row.id)) return false;
+          if (Math.abs(row.amount - expectedFee) > Math.max(BS_EPS, expectedFee * 0.0001)) return false;
+          if (movement.account !== 'NENEKA') return isCommissionRow(row);
+          if (!row.identity) return false;
+          return identityMap.get(mapKey(row.bank, row.identity))?.clientId === movement.clientId;
+        });
+        if (feeCandidates.length === 1) subset = [...subset, feeCandidates[0]];
+      }
+
+      candidates.push({
+        ledger: movement,
+        rows: subset,
+        confidence: subset.length === 1 ? 0.99 : 0.98,
+        identity,
+        owner,
+        evidence: owner.evidence,
+      });
+    }
+
+    const signatures = new Map(candidates.map((candidate) => [
+      candidate.rows.map((row) => row.id).sort((a, b) => a - b).join(','),
+      candidate,
+    ]));
+    if (signatures.size !== 1) continue;
+    const suggestion = [...signatures.values()][0];
+    suggestions.push(suggestion);
+    suggestion.rows.forEach((row) => usedStatements.add(row.id));
+  }
+
+  await db.query(
+    `DELETE FROM reconciliations
+     WHERE status='suggested' AND reasons @> $1::jsonb`,
+    [JSON.stringify([BS_MATCH_REASON])],
+  );
+
+  let inserted = 0;
+  for (const suggestion of suggestions) {
+    for (const row of suggestion.rows) {
+      const reason = [
+        BS_MATCH_REASON,
+        'banco, fecha, direccion e identidad coinciden',
+        `${suggestion.identity.kind}: ${suggestion.identity.key}`,
+        suggestion.owner?.ruleStrategy ? `regla revisada: ${suggestion.owner.ruleStrategy}` : `evidencia historica: ${suggestion.evidence}`,
+        ...(suggestion.owner.ruleInstruction ? [`instruccion: ${suggestion.owner.ruleInstruction}`] : []),
+        suggestion.rows.length === 1 ? 'monto exacto 1:1' : `suma exacta 1:${suggestion.rows.length}`,
+      ];
+      const result = await db.query(
+        `INSERT INTO reconciliations
+           (fund_movement_id, external_transaction_id, allocated_native_amount, status, confidence, reasons)
+         VALUES ($1,$2,$3,'suggested',$4,$5)
+         ON CONFLICT (fund_movement_id, external_transaction_id) DO NOTHING`,
+        [suggestion.ledger.id, row.id, row.amount, suggestion.confidence, JSON.stringify(reason)],
+      );
+      inserted += result.rowCount ?? 0;
+    }
+  }
+
+  await db.query(
+    `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state)
+     VALUES ('app_web','sync-google-sheet','suggest_bs_reconciliations','account','EDO CTA BS',$1)`,
+    [JSON.stringify({
+      identities_univocas: identityMap.size,
+      identities_ambiguas: ambiguousIdentities,
+      movimientos_pendientes: ledger.length,
+      filas_estado_disponibles: statements.length,
+      operaciones_sugeridas: suggestions.length,
+      enlaces_sugeridos: inserted,
+    })],
+  );
+
+  output.push('== Sugerencias Bs ==');
+  output.push(`Identidades univocas: ${identityMap.size} | ambiguas: ${ambiguousIdentities}`);
+  output.push(`Pendientes evaluados: ${ledger.length} | filas disponibles: ${statements.length}`);
+  output.push(`Operaciones sugeridas: ${suggestions.length} | enlaces sugeridos: ${inserted}`);
 }
 
 export async function syncGoogleSheetCloud() {
@@ -346,6 +929,10 @@ export async function syncGoogleSheetCloud() {
         }),
       ],
     );
+
+    await importExternalSources(db, output);
+    await reconstructBsLinks(db, output);
+    await suggestBsMatches(db, output);
 
     await db.query('COMMIT');
 
