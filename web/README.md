@@ -61,3 +61,12 @@ pero valida el verify token y la firma `X-Hub-Signature-256`.
 4. Configura las variables de entorno.
 5. Despliega.
 6. En Meta, cambia el webhook a `https://tu-app.vercel.app/api/whatsapp/webhook`.
+
+Estado actual:
+
+- GitHub: repo privado `github.com/carlosshernandezz/kw2`.
+- Producción: Vercel proyecto `kw2`, dominio esperado `https://kw2-six.vercel.app`.
+- Base: Supabase `kw2-production`; usar **Transaction pooler** en `DATABASE_URL`, no Direct ni Session para Vercel.
+- Si la contraseña de Supabase tiene caracteres especiales (`*`, `.`, etc.), URL-encodear la contraseña antes de pegarla en `DATABASE_URL` (`*` -> `%2A`).
+- Basic Auth es temporal. El navegador recuerda credenciales por dominio y no hay logout; reemplazar por login real antes de operación con usuarios finales.
+- El botón de sincronización con Google Sheets solo ejecuta el script local en la Mac mini. En Vercel queda bloqueado con un mensaje claro hasta definir el flujo cloud.

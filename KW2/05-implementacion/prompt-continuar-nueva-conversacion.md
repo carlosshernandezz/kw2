@@ -72,24 +72,39 @@ Reglas confirmadas:
 - Para Bs, banco, fecha y direccion deben coincidir. Las reglas revisadas de identidad tienen prioridad sobre la historia.
 - `preferred_client` significa cliente esperado desde ahora. `bridge_account` solo permite el cliente configurado con monto exacto.
 - Las explicaciones de revisión se guardan en `bs_identity_rules` y `audit_events`; no alteran conciliaciones anteriores.
+- La app ya fue desplegada en Vercel con Supabase; Basic Auth es temporal y no tiene logout real.
+- El webhook de WhatsApp queda sin Basic Auth, pero valida verify token y firma de Meta.
 
 Contexto tecnico:
 
 - Proyecto local: /Users/pc/Documents/Kw2
 - App web: cd web && npm run dev
 - PostgreSQL: Docker Compose, contenedor kw2-postgres
+- Produccion: Vercel proyecto `kw2`, Root Directory `web`, dominio esperado https://kw2-six.vercel.app
+- Base cloud: Supabase `kw2-production`, project ref `qfogomlixwyqqxdoaeev`; en Vercel usar Transaction pooler en `DATABASE_URL` + `DATABASE_SSL=true`.
+- Repo GitHub privado: github.com/carlosshernandezz/kw2
+- Basic Auth actual: `KW2_BASIC_AUTH_USERS` en Vercel. El navegador recuerda la sesión por dominio; esto es normal y por eso falta login real.
 - Ollama local: http://127.0.0.1:11434
 - Modelo local principal: qwen3:8b
 - Para hablar directo con el modelo: ollama run qwen3:8b
 - Para probar API: usar POST a /api/generate; no se chatea abriendo esa URL en navegador.
-- Acceso en red local: http://192.168.68.54:3000 (sin autenticacion todavia; no exponer a Internet).
+- Acceso en red local: http://192.168.68.54:3000 mientras la Mac mini corre `npm run dev`.
 
 Estado Bs al 18-jun-2026:
 
 - 5962 conciliados, 19 pendientes reales, 0 sugerencias.
 - `/conciliacion/bs/pendientes` funciona, pero muestra 0 filas de EDO CTA compatibles hasta importar/transcribir el estado del dia.
 - La migracion 007 (`bs_identity_rules`) ya fue aplicada a la base local.
+- La migracion 008 (`whatsapp_reporters`, `whatsapp_messages`, `operation_intakes`) ya existe para recepcion por WhatsApp.
 - Los ejemplos 10335114 -> Karen y 27187469 -> cuenta puente/CJHP fueron discutidos, pero no guardados; deben confirmarse desde la interfaz.
+
+Estado cloud al 8-jul-2026:
+
+- Commit de despliegue base: `d576f8a Prepare KW2 web for cloud deployment`.
+- Dump inicial: `backups/kw2-cloud-20260707-2059.dump` (ignorado por Git).
+- Supabase verificado con `select count(*) from clients;` = 374.
+- La app ya carga en Vercel después de configurar `DATABASE_URL` con Transaction pooler y password URL-encoded.
+- Pendiente: probar pantallas clave en producción, reemplazar Basic Auth por login real, decidir sincronización local/cloud y activar WhatsApp en producción.
 
 Antes de proponer cambios, dime si entiendes el estado y hazme solo las preguntas indispensables.
 ```

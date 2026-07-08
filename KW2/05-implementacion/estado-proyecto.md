@@ -1,12 +1,12 @@
 # KW2 - Estado Del Proyecto
 
-Actualizado: 22 de junio de 2026 (America/Caracas).
+Actualizado: 8 de julio de 2026 (America/Caracas).
 
 Documento vivo para retomar el trabajo desde cualquier maquina o sesion nueva. Leerlo junto con el resto de `KW2/` da el contexto completo.
 
 ## Negocio (resumen)
 
-KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). Hoy opera sobre el Google Sheet `2026 KW2` (hoja central `MOVIMIENTOS` = libro mayor; `DATA` = maestro de clientes/cuentas/saldos). El objetivo es un sistema local en la Mac mini que replique, concilie y automatice, con un agente de IA de solo lectura.
+KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). El Google Sheet `2026 KW2` sigue siendo la fuente operativa que Carlos modifica a mano (`MOVIMIENTOS` = libro mayor; `DATA` = maestro de clientes/cuentas/saldos). La app KW2 replica esa información en PostgreSQL, ayuda a conciliar, audita decisiones y prepara el camino para automatizar registro/WhatsApp sin escribir en el Sheet.
 
 ## Fases y dónde estamos
 
@@ -17,13 +17,18 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 - **4 Reportes/dashboard**: saldos de clientes, saldos por cuenta, KPIs, utilidad, ficha de cliente con evidencia. ✅ (falta cierre diario, comisiones operador/Jorge/Mileng, ajuste Bs)
 - **5 Agente IA local**: Q&A solo lectura (8 herramientas) sobre qwen3:8b + modo razonamiento con deepseek-r1:8b. ✅
 - **6 Operación principal**: recepcion por WhatsApp iniciada (migracion 008, webhook firmado y bandeja compartida). Falta activar Meta, OCR, interpretacion y aprobacion. 🔶
+- **7 Publicación web**: GitHub privado + Supabase + Vercel funcionando con Basic Auth temporal. ✅ Falta reemplazar Basic Auth por login real con usuarios, roles, sesiones y logout.
 
 ## Infraestructura
 
-- PostgreSQL 17 en Docker (`compose.yaml`, contenedor `kw2-postgres`, 127.0.0.1:5432). Arrancar: `docker compose up -d`.
+- PostgreSQL 17 local en Docker (`compose.yaml`, contenedor `kw2-postgres`, 127.0.0.1:5432). Arrancar: `docker compose up -d`.
+- PostgreSQL cloud en Supabase (`kw2-production`, project ref `qfogomlixwyqqxdoaeev`). En Vercel usar el **Transaction pooler** como `DATABASE_URL`, con password URL-encoded y `DATABASE_SSL=true`.
 - Migraciones en `infra/postgres/init/` (001-008), se aplican con `psql`. La 008 agrega `whatsapp_reporters`, `whatsapp_messages` y `operation_intakes`.
 - Importadores en `importer/src/` (Node+TS, service account Google solo-lectura, clave en `google-credentials.json` fuera de Git).
-- App web en `web/` (Next.js 16 + Tailwind, sin login, localhost:3000, actor `app_web`). Correr: `cd web && npm run dev`.
+- App web en `web/` (Next.js 16 + Tailwind, localhost:3000 local; Vercel en producción; actor `app_web`). Correr local: `cd web && npm run dev`.
+- Producción Vercel: proyecto `kw2`, Root Directory `web`, dominio esperado `https://kw2-six.vercel.app`. El deploy requiere `DATABASE_URL`, `DATABASE_SSL`, `KW2_BASIC_AUTH_USERS` y variables WhatsApp cuando se active.
+- GitHub: repo privado `github.com/carlosshernandezz/kw2`. Último commit de despliegue base: `d576f8a Prepare KW2 web for cloud deployment`.
+- Backup cloud inicial: `backups/kw2-cloud-20260707-2059.dump` (ignorado por Git). Supabase verificado con `select count(*) from clients;` = 374.
 - Ollama con `qwen3:8b` (`ollama pull qwen3:8b`). El agente llama `http://127.0.0.1:11434`.
 
 ## Pipeline de datos (cadena de sincronización)
@@ -91,7 +96,8 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 
 - Next.js permite los orígenes de desarrollo `127.0.0.1` y `192.168.68.54` en `web/next.config.ts`.
 - En la red de la oficina: `http://192.168.68.54:3000` mientras la Mac mini, Docker y `npm run dev` estén activos.
-- La app todavía no tiene autenticación ni roles. No exponer el puerto 3000 directamente a Internet. Próximo paso recomendado para acceso remoto: Tailscale; despliegue formal posterior: Vercel + PostgreSQL administrado + autenticación.
+- En Internet: usar Vercel, no abrir el puerto local. URL esperada de producción: `https://kw2-six.vercel.app`.
+- Autenticación actual: Basic Auth vía `KW2_BASIC_AUTH_USERS`. Es una barrera temporal; el navegador recuerda credenciales por dominio y no existe logout real. Próximo paso recomendado: login propio con usuarios, roles, sesiones, auditoría por operador y cierre de sesión.
 
 ## Recepcion por WhatsApp
 
@@ -101,7 +107,10 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 - Webhook: `GET/POST /api/whatsapp/webhook`; valida token de alta y firma HMAC de Meta.
 - Bandeja: `/operaciones/recibidas`. Por ahora solo recibe y audita; no ejecuta OCR, no genera asientos y no escribe el Sheet.
 - Instrucciones y seguridad: `KW2/05-implementacion/whatsapp-cloud-api.md`.
-- No migrar el numero hasta respaldar/exportar el historial y confirmar coexistencia con Meta.
+- Meta Cloud API fue probada con número de prueba y webhook por túnel Cloudflare. Para producción, el callback debe apuntar al dominio Vercel: `https://kw2-six.vercel.app/api/whatsapp/webhook`.
+- El webhook está exento de Basic Auth para que Meta pueda llamarlo, pero valida verify token/firma.
+- En local los adjuntos van a `data/whatsapp/`; en Vercel el fallback actual usa `/tmp/kw2-whatsapp`, que es temporal. Antes de operar evidencia real en producción se debe agregar almacenamiento durable (Supabase Storage, S3 o R2).
+- No migrar el numero definitivo hasta respaldar/exportar el historial, confirmar coexistencia con Meta y completar la prueba de producción.
 
 ## Cómo corre el agente (RAM en la Mac mini M4 16GB)
 
@@ -126,18 +135,21 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 - Código y docs: Git (github.com/carlosshernandezz/kw2, privado).
 - Secretos (`.env`, `google-credentials.json`): a mano (AirDrop/USB), nunca por Git.
 - Base de datos: pg_dump/restore (las decisiones en base no se reproducen del Sheet). Scripts: `scripts/kw2-save.sh` (al salir) y `scripts/kw2-load.sh` (al llegar). Futuro: Tailscale cuando la Mac mini quede fija.
+- Producción cloud: Supabase es una copia importada para Vercel. Todavía no hay sincronización bidireccional automática entre la base local y cloud. Decisión pendiente: si el trabajo diario se muda a Supabase o si local sigue siendo maestro y se publica por dumps controlados.
+- El botón **"Sincronizar con el Sheet"** ejecuta `scripts/kw2-sync.sh` solo en local. En Vercel no puede ejecutar scripts de la Mac mini; hasta definir el flujo cloud, producción lee la copia de Supabase.
 
 ## Siguiente paso recomendado
 
-1. Importar/transcribir el `EDO CTA BS` del 18-jun y validar la conciliación manual de los 19 pendientes con filas reales.
-2. Guardar desde la interfaz las reglas confirmadas de `10335114` y `27187469`; ejecutar `match-bs.ts` y revisar las nuevas sugerencias antes de confirmar.
-3. Añadir autenticación y usuarios individuales antes de permitir que los tres operadores tomen decisiones desde la app; conservar actor real en auditoría.
-4. Extender conciliación a cash y Zelle, y luego consolidar el año pasado (cliente 2025 debe quedar en 0).
-5. Cierre diario + comisiones Jorge/Mileng/operador + ajuste Bs.
+1. Estabilizar producción: revisar `/`, `/dashboard`, `/conciliacion/bs`, `/conciliacion/binance`, `/operaciones/recibidas`, `/agente` y confirmar que todas leen Supabase sin errores.
+2. Reemplazar Basic Auth por login real: usuarios individuales, roles, sesiones, logout y `actor` correcto en auditoría.
+3. Definir flujo de sincronización cloud: quién es maestro (Sheet/local/Supabase), cuándo se reimporta y cómo se evita pisar decisiones de conciliación.
+4. Activar WhatsApp en producción: webhook Vercel, variables privadas, prueba real, almacenamiento durable de evidencias y luego OCR/interpretación/aprobación.
+5. Importar/transcribir `EDO CTA BS` pendiente y validar conciliación manual de Bs; guardar desde la interfaz las reglas confirmadas de `10335114` y `27187469` si Carlos las confirma.
+6. Extender conciliación a cash y Zelle, consolidar año pasado (`2025` debe quedar en 0) y construir cierre diario + comisiones Jorge/Mileng/operador + ajuste Bs.
 
 ## Cambios locales pendientes de versionar
 
-Al cerrar esta sesión existen cambios sin commit en conciliación Bs, agente y acceso LAN. Revisar `git status`; incluyen migración 007, `bs-manual.ts`, APIs/pantalla de pendientes, reglas de identidad, detalle de evidencia histórica, fechas deterministas del agente y `allowedDevOrigins`.
+Antes de esta actualización de documentación, `git status` estaba limpio en `main...origin/main`. Los cambios pendientes actuales son documentación interna para reflejar Vercel/Supabase/Basic Auth y el plan de estabilización.
 
 ## Cómo retomar en una conversación nueva
 
@@ -152,10 +164,10 @@ Primero NO hagas cambios. Lee en orden:
 - Todos los documentos dentro de KW2/
 - compose.yaml, infra/postgres/init/, infra/postgres/tests/
 - importer/src/
-- web/AGENTS.md y web/lib/ (agent.ts, agent-tools.ts, reconciliation.ts, bs-reconciliation.ts, bs-manual.ts, reports.ts, manual.ts, corrections.ts)
+- web/README.md, web/AGENTS.md y web/lib/ (agent.ts, agent-tools.ts, reconciliation.ts, bs-reconciliation.ts, bs-manual.ts, reports.ts, manual.ts, corrections.ts)
 - web/app/conciliacion/bs/ y web/app/api/bs/
 
-Luego comprueba: git status, Docker/PostgreSQL (docker compose ps), migraciones aplicadas (debe incluir 007_bs_identity_rules), y que Ollama tenga qwen3:8b y deepseek-r1:8b (ollama list).
+Luego comprueba: git status, Docker/PostgreSQL (docker compose ps), migraciones aplicadas (debe incluir 007_bs_identity_rules y 008_whatsapp_intake), variables de entorno necesarias, y que Ollama tenga qwen3:8b y deepseek-r1:8b (ollama list).
 
 Resume: (1) negocio, (2) qué está construido, (3) decisiones confirmadas, (4) pendiente, (5) siguiente paso recomendado.
 
@@ -169,6 +181,11 @@ Reglas que NO debes romper:
 - Las sugerencias Binance 0.99 son confiables para confirmar en bloque; las de baja confianza van por conciliación manual.
 - La conciliación Bs usa identidad + banco + misma fecha + dirección + monto. Las reglas revisadas `preferred_client`/`bridge_account` prevalecen sobre la historia.
 - Estado Bs al 18-jun: 5962 conciliados, 19 pendientes, 0 sugerencias y 0 filas compatibles de EDO CTA hasta importar el estado del día.
+- Producción ya existe: GitHub privado + Supabase `kw2-production` + Vercel proyecto `kw2`, Root Directory `web`, dominio esperado `https://kw2-six.vercel.app`.
+- En Vercel, `DATABASE_URL` debe usar Supabase Transaction pooler con password URL-encoded y `DATABASE_SSL=true`.
+- Basic Auth (`KW2_BASIC_AUTH_USERS`) es temporal; el navegador recuerda credenciales y no hay logout real. Siguiente paso: login propio con usuarios/roles/sesiones.
+- El webhook WhatsApp `/api/whatsapp/webhook` queda sin Basic Auth, pero valida verify token y firma de Meta.
+- La base cloud fue cargada con `backups/kw2-cloud-20260707-2059.dump`; Supabase verificó 374 clientes.
 
 El flujo de trabajo diario: editar el Sheet → botón "Sincronizar con el Sheet" en la app → revisar "Necesitan revisión" → conciliar en "Conciliación manual".
 ```

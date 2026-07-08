@@ -1,15 +1,39 @@
 import { NextResponse } from 'next/server';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
-// Corre la sincronizacion con el Sheet (scripts/kw2-sync.sh) y devuelve su salida.
+// Corre la sincronizacion local con el Sheet y devuelve su salida.
 export async function POST() {
+  if (process.env.VERCEL) {
+    return NextResponse.json(
+      {
+        ok: false,
+        output:
+          'La sincronización directa con el Sheet todavía es local. En Vercel la app lee Supabase, pero no puede ejecutar scripts de la Mac mini. Próximo paso: definir si la sincronización cloud importará directo desde Google Sheets o si publicaremos dumps controlados desde la Mac.',
+      },
+      { status: 501 },
+    );
+  }
+
   const root = path.resolve(process.cwd(), '..');
+  const script = path.join(root, 'scripts', 'kw2-sync.sh');
+
+  if (!existsSync(script)) {
+    return NextResponse.json(
+      {
+        ok: false,
+        output: `No encontré el script local de sincronización: ${script}`,
+      },
+      { status: 500 },
+    );
+  }
+
   return await new Promise<Response>((resolve) => {
-    const p = spawn('bash', ['scripts/kw2-sync.sh'], { cwd: root });
+    const p = spawn('bash', [script], { cwd: root });
     let out = '';
     p.stdout.on('data', (d) => (out += d));
     p.stderr.on('data', (d) => (out += d));

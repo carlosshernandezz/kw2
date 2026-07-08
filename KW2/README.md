@@ -1,6 +1,6 @@
 # KW2 - Documentacion Del Proyecto
 
-Esta carpeta organiza la documentacion del redisenio operativo y tecnico de KW2.
+Esta carpeta organiza la documentacion del redisenio operativo y tecnico de KW2. Al 8-jul-2026 el sistema ya existe como app local y como despliegue web en Vercel/Supabase; el Google Sheet sigue siendo la fuente operativa que se corrige manualmente.
 
 ## Estructura
 
@@ -24,7 +24,16 @@ Esta carpeta organiza la documentacion del redisenio operativo y tecnico de KW2.
 
 Para retomar el proyecto, comenzar por `05-implementacion/estado-proyecto.md`:
 contiene el estado operativo y técnico actualizado, las migraciones aplicadas,
-las pantallas disponibles y los riesgos pendientes.
+las pantallas disponibles, el despliegue cloud y los riesgos pendientes.
+
+## Estado Actual Corto
+
+- Fuente operativa: Google Sheet `2026 KW2`; la app no escribe en `MOVIMIENTOS`.
+- App local: Next.js + PostgreSQL Docker en la Mac mini.
+- App web: Vercel con Supabase PostgreSQL y Basic Auth temporal.
+- Agente local: solo lectura; consulta herramientas deterministas y no inventa cifras.
+- WhatsApp: base técnica creada; falta activar producción, almacenamiento durable, OCR e interpretación.
+- Siguiente prioridad: estabilizar producción, agregar login real y definir sincronización local/cloud.
 
 ## Convencion
 
