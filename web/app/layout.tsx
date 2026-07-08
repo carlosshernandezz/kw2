@@ -20,6 +20,9 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
               <a className="rounded-md px-3 py-2 font-medium text-slate-700 hover:bg-slate-100" href="/agente">
                 Agente
               </a>
+              <a className="rounded-md px-3 py-2 font-medium text-slate-700 hover:bg-slate-100" href="/operaciones/recibidas">
+                Operaciones recibidas
+              </a>
               <a
                 className="rounded-md px-3 py-2 font-medium text-slate-700 hover:bg-slate-100"
                 href="/conciliacion/binance"
@@ -60,7 +63,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                 Saldos por cuenta
               </a>
               <a className="rounded-md px-3 py-2 font-medium text-slate-700 hover:bg-slate-100" href="/kpis">
-                KPIs
+                Dashboard
               </a>
             </nav>
           </aside>

@@ -42,6 +42,17 @@ export type AmbiguousIdentityOperation = {
   kw2Id: string | null;
 };
 
+export type BsMovementListRow = {
+  id: number; date: string; bank: string; client: string; direction: string;
+  bsAmount: number; usdAmount: number; row: number | null; operation: string | null;
+  kw2Id: string | null; status: string;
+};
+
+export type BsMovementList = {
+  status: 'reconciled' | 'suggested' | 'not-applicable';
+  total: number; page: number; pageSize: number; rows: BsMovementListRow[];
+};
+
 const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
 const NENEKA_CONTROL_DESCRIPTIONS = new Set(['COMISION', 'A', 'SI', 'AJUSTE BS', 'TS']);
 
@@ -72,6 +83,40 @@ export async function bsSummary() {
     [JSON.stringify([TAG])],
   )).rows[0];
   return row;
+}
+
+export async function bsMovements(
+  status: BsMovementList['status'], page = 1, pageSize = 200,
+): Promise<BsMovementList> {
+  const safePage = Math.max(1, Math.floor(page));
+  const safeSize = Math.min(500, Math.max(25, Math.floor(pageSize)));
+  const condition = status === 'reconciled'
+    ? `fm.status='reconciled'`
+    : status === 'suggested'
+      ? `EXISTS (SELECT 1 FROM reconciliations r WHERE r.fund_movement_id=fm.id AND r.status='suggested' AND r.reasons @> $1::jsonb)`
+      : `NULLIF(fm.source_payload->>'operacion','') IS NULL`;
+  const params: unknown[] = status === 'suggested' ? [JSON.stringify([TAG])] : [];
+  const base = `FROM fund_movements fm JOIN accounts a ON a.id=fm.account_id JOIN clients c ON c.id=fm.client_id
+    WHERE fm.source='google_sheet_movimientos' AND a.medium='bs' AND fm.status<>'voided' AND ${condition}`;
+  const total = Number((await pool.query(`SELECT count(*)::int total ${base}`, params)).rows[0].total);
+  const result = await pool.query(
+    `SELECT fm.id, fm.effective_at::date::text date, a.name bank, c.name client,
+            fm.direction, fm.native_amount::float8 bs_amount, fm.usd_amount::float8 usd_amount,
+            (fm.source_payload->>'row_number')::int row_number,
+            NULLIF(fm.source_payload->>'operacion','') operation, fm.kw2_id, fm.status
+     ${base}
+     ORDER BY fm.effective_at DESC, fm.id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, safeSize, (safePage - 1) * safeSize],
+  );
+  return {
+    status, total, page: safePage, pageSize: safeSize,
+    rows: result.rows.map((row: any) => ({
+      id: Number(row.id), date: row.date, bank: row.bank, client: row.client,
+      direction: row.direction, bsAmount: Number(row.bs_amount), usdAmount: Number(row.usd_amount),
+      row: row.row_number == null ? null : Number(row.row_number), operation: row.operation,
+      kw2Id: row.kw2_id, status: row.status,
+    })),
+  };
 }
 
 export async function bsSuggestions(): Promise<BsSuggestion[]> {

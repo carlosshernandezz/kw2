@@ -1,6 +1,6 @@
 # KW2 - Estado Del Proyecto
 
-Actualizado: 18 de junio de 2026, 17:55 (America/Caracas).
+Actualizado: 22 de junio de 2026 (America/Caracas).
 
 Documento vivo para retomar el trabajo desde cualquier maquina o sesion nueva. Leerlo junto con el resto de `KW2/` da el contexto completo.
 
@@ -16,12 +16,12 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 - **3 Conciliación asistida**: BINANCE CH completo. Bancos Bs ya tienen reconstrucción histórica, matcher por identidad, revisión de sugerencias, conciliación manual, reglas revisadas y correcciones de comisión. Faltan: importar/actualizar diariamente `EDO CTA BS`, cash, Zelle y el **año pasado**. 🔶
 - **4 Reportes/dashboard**: saldos de clientes, saldos por cuenta, KPIs, utilidad, ficha de cliente con evidencia. ✅ (falta cierre diario, comisiones operador/Jorge/Mileng, ajuste Bs)
 - **5 Agente IA local**: Q&A solo lectura (8 herramientas) sobre qwen3:8b + modo razonamiento con deepseek-r1:8b. ✅
-- **6 Operación principal**: captura desde la app, app como fuente de verdad, 24/7. ⬜
+- **6 Operación principal**: recepcion por WhatsApp iniciada (migracion 008, webhook firmado y bandeja compartida). Falta activar Meta, OCR, interpretacion y aprobacion. 🔶
 
 ## Infraestructura
 
 - PostgreSQL 17 en Docker (`compose.yaml`, contenedor `kw2-postgres`, 127.0.0.1:5432). Arrancar: `docker compose up -d`.
-- Migraciones en `infra/postgres/init/` (001-007), se aplican con `psql`. Tablas: clients, client_aliases, operators, accounts, operations, obligations, fund_movements, obligation_allocations, external_transactions, reconciliations, daily_account_closures, audit_events, sheet_corrections (004), reconciliation_marks (005), `fund_movements.kw2_id` (006) y `bs_identity_rules` (007).
+- Migraciones en `infra/postgres/init/` (001-008), se aplican con `psql`. La 008 agrega `whatsapp_reporters`, `whatsapp_messages` y `operation_intakes`.
 - Importadores en `importer/src/` (Node+TS, service account Google solo-lectura, clave en `google-credentials.json` fuera de Git).
 - App web en `web/` (Next.js 16 + Tailwind, sin login, localhost:3000, actor `app_web`). Correr: `cd web && npm run dev`.
 - Ollama con `qwen3:8b` (`ollama pull qwen3:8b`). El agente llama `http://127.0.0.1:11434`.
@@ -92,6 +92,16 @@ KW2 es una mesa de cambio (USD cash, Zelle, USDT/Binance, Bs en varios bancos). 
 - Next.js permite los orígenes de desarrollo `127.0.0.1` y `192.168.68.54` en `web/next.config.ts`.
 - En la red de la oficina: `http://192.168.68.54:3000` mientras la Mac mini, Docker y `npm run dev` estén activos.
 - La app todavía no tiene autenticación ni roles. No exponer el puerto 3000 directamente a Internet. Próximo paso recomendado para acceso remoto: Tailscale; despliegue formal posterior: Vercel + PostgreSQL administrado + autenticación.
+
+## Recepcion por WhatsApp
+
+- Canal acordado: un numero WhatsApp Business exclusivo de KW2 recibe por privado; dos operadores autorizados reportan y el tercero no reporta directamente.
+- Migracion `008_whatsapp_intake` aplicada el 22-jun-2026. Los dos reportantes quedaron registrados localmente en PostgreSQL; sus telefonos no viven en Git.
+- Cada mensaje queda asociado al remitente por numero, con ID original, fecha, texto, tipo, payload y archivo privado.
+- Webhook: `GET/POST /api/whatsapp/webhook`; valida token de alta y firma HMAC de Meta.
+- Bandeja: `/operaciones/recibidas`. Por ahora solo recibe y audita; no ejecuta OCR, no genera asientos y no escribe el Sheet.
+- Instrucciones y seguridad: `KW2/05-implementacion/whatsapp-cloud-api.md`.
+- No migrar el numero hasta respaldar/exportar el historial y confirmar coexistencia con Meta.
 
 ## Cómo corre el agente (RAM en la Mac mini M4 16GB)
 

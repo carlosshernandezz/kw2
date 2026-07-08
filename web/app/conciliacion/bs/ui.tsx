@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { AmbiguousIdentity, AmbiguousIdentityOperation, BsSuggestion } from '@/lib/bs-reconciliation';
 
 const money = (value: number) => value.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -20,6 +20,17 @@ export default function BsClient({ initialSummary, initialSuggestions, initialAm
   const [ruleStrategy, setRuleStrategy] = useState<'preferred_client' | 'bridge_account'>('preferred_client');
   const [ruleClientId, setRuleClientId] = useState<number>(0);
   const [ruleInstruction, setRuleInstruction] = useState('');
+  const [identityFilters, setIdentityFilters] = useState({ bank: '', type: '', identity: '', clients: '' });
+
+  const filteredIdentities = useMemo(() => ambiguous.filter((item) => {
+    const clients = item.clients.map((client) => client.name).join(' ');
+    return item.bank.toLowerCase().includes(identityFilters.bank.toLowerCase())
+      && item.type.toLowerCase().includes(identityFilters.type.toLowerCase())
+      && item.identity.toLowerCase().includes(identityFilters.identity.toLowerCase())
+      && clients.toLowerCase().includes(identityFilters.clients.toLowerCase());
+  }), [ambiguous, identityFilters]);
+  const ambiguousPending = filteredIdentities.filter((item) => !item.rule);
+  const verifiedIdentities = filteredIdentities.filter((item) => item.rule);
 
   async function refresh() {
     const response = await fetch('/api/bs', { cache: 'no-store' });
@@ -90,6 +101,31 @@ export default function BsClient({ initialSummary, initialSuggestions, initialAm
     finally { setBusy(false); }
   }
 
+  function identityTable(items: AmbiguousIdentity[], emptyText: string) {
+    return <div className="mt-3 overflow-x-auto border-y border-slate-200 bg-white">
+      <table className="w-full min-w-[1050px] text-sm"><thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Banco</th><th className="px-3 py-2">Tipo</th><th className="px-3 py-2">Identidad</th><th className="px-3 py-2">Clientes históricos</th><th className="px-3 py-2">Regla</th></tr></thead>
+        <tbody className="divide-y divide-slate-100">{!items.length && <tr><td colSpan={5} className="px-3 py-8 text-center text-slate-400">{emptyText}</td></tr>}{items.map((item) => {
+          const itemKey = `${item.bank}-${item.type}-${item.identity}`;
+          const selectedClient = item.clients.find((client) => openEvidence === `${item.bank}|${item.type}|${item.identity}|${client.id}`);
+          const selectedKey = selectedClient ? `${item.bank}|${item.type}|${item.identity}|${selectedClient.id}` : null;
+          return <tr key={itemKey}>
+            <td className="px-3 py-2">{item.bank}</td>
+            <td className="px-3 py-2 text-slate-500">{item.type}</td>
+            <td className="px-3 py-2 font-medium">{item.identity}</td>
+            <td className="px-3 py-2"><div>{item.clients.map((client, index) => {
+              const key = `${item.bank}|${item.type}|${item.identity}|${client.id}`;
+              return <span key={key}>{index > 0 && <span className="text-slate-400"> · </span>}<button type="button" onClick={() => showEvidence(item, client.id)} className={`text-left underline decoration-slate-400 underline-offset-2 hover:text-sky-700 ${openEvidence === key ? 'font-semibold text-sky-700' : ''}`}>{client.name} ({client.evidence})</button></span>;
+            })}</div>{selectedClient && selectedKey && <div className="mt-3 bg-slate-50 p-3"><EvidenceDetail clientName={selectedClient.name} operations={evidence[selectedKey]} error={evidenceError} /></div>}</td>
+            <td className="min-w-[240px] px-3 py-2 align-top">
+              {item.rule && <div className="mb-2"><div className="text-xs font-semibold text-emerald-700">Verificado · {item.rule.strategy === 'preferred_client' ? 'cliente preferido' : 'cuenta puente'}</div><div className="mt-1 text-xs text-slate-600">{item.rule.clientName} · monto exacto</div><div className="mt-1 text-xs text-slate-500">{item.rule.instruction}</div></div>}
+              <button type="button" onClick={() => startReview(item)} className="text-sm font-medium text-sky-700 underline underline-offset-2">{item.rule ? 'Editar verificación' : 'Marcar como revisado'}</button>
+              {reviewing === `${item.bank}|${item.type}|${item.identity}` && <RuleEditor item={item} strategy={ruleStrategy} setStrategy={setRuleStrategy} clientId={ruleClientId} setClientId={setRuleClientId} instruction={ruleInstruction} setInstruction={setRuleInstruction} busy={busy} save={() => saveRule(item)} />}
+            </td>
+          </tr>;
+        })}</tbody></table>
+    </div>;
+  }
+
   return (
     <div className="mx-auto max-w-6xl">
       <div className="flex items-end justify-between gap-4">
@@ -101,10 +137,10 @@ export default function BsClient({ initialSummary, initialSuggestions, initialAm
       </div>
 
       <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Card label="Conciliados" value={summary.reconciled} />
-        <Card label="Sugerencias" value={summary.suggested} />
+        <Card label="Conciliados" value={summary.reconciled} href="/conciliacion/bs/movimientos?status=reconciled" />
+        <Card label="Sugerencias" value={summary.suggested} href="/conciliacion/bs/movimientos?status=suggested" />
         <Card label="Pendientes reales" value={summary.pending} href="/conciliacion/bs/pendientes" />
-        <Card label="No aplica" value={summary.not_applicable} />
+        <Card label="No aplica" value={summary.not_applicable} href="/conciliacion/bs/movimientos?status=not-applicable" />
       </div>
       {message && <div className="mt-4 border-l-4 border-sky-500 bg-sky-50 px-4 py-3 text-sm text-sky-900">{message}</div>}
 
@@ -131,30 +167,20 @@ export default function BsClient({ initialSummary, initialSuggestions, initialAm
       </section>
 
       <section className="mt-9">
-        <h2 className="text-lg font-semibold text-slate-900">Identidades ambiguas</h2>
-        <p className="mt-1 text-sm text-slate-500">No se usan para sugerencias hasta aclarar a qué cliente pertenecen.</p>
-        <div className="mt-3 overflow-x-auto border-y border-slate-200 bg-white">
-          <table className="w-full text-sm"><thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Banco</th><th className="px-3 py-2">Tipo</th><th className="px-3 py-2">Identidad</th><th className="px-3 py-2">Clientes históricos</th><th className="px-3 py-2">Regla</th></tr></thead>
-          <tbody className="divide-y divide-slate-100">{ambiguous.map((item) => {
-            const itemKey = `${item.bank}-${item.type}-${item.identity}`;
-            const selectedClient = item.clients.find((client) => openEvidence === `${item.bank}|${item.type}|${item.identity}|${client.id}`);
-            const selectedKey = selectedClient ? `${item.bank}|${item.type}|${item.identity}|${selectedClient.id}` : null;
-            return <tr key={itemKey}>
-                <td className="px-3 py-2">{item.bank}</td>
-                <td className="px-3 py-2 text-slate-500">{item.type}</td>
-                <td className="px-3 py-2 font-medium">{item.identity}</td>
-                <td className="px-3 py-2"><div>{item.clients.map((client, index) => {
-                  const key = `${item.bank}|${item.type}|${item.identity}|${client.id}`;
-                  return <span key={key}>{index > 0 && <span className="text-slate-400"> · </span>}<button type="button" onClick={() => showEvidence(item, client.id)} className={`text-left underline decoration-slate-400 underline-offset-2 hover:text-sky-700 ${openEvidence === key ? 'font-semibold text-sky-700' : ''}`}>{client.name} ({client.evidence})</button></span>;
-                })}</div>{selectedClient && selectedKey && <div className="mt-3 bg-slate-50 p-3"><EvidenceDetail clientName={selectedClient.name} operations={evidence[selectedKey]} error={evidenceError} /></div>}</td>
-                <td className="min-w-[240px] px-3 py-2 align-top">
-                  {item.rule && <div className="mb-2"><div className="text-xs font-semibold text-emerald-700">Revisado · {item.rule.strategy === 'preferred_client' ? 'cliente preferido' : 'cuenta puente'}</div><div className="mt-1 text-xs text-slate-600">{item.rule.clientName} · monto exacto</div><div className="mt-1 text-xs text-slate-500">{item.rule.instruction}</div></div>}
-                  <button type="button" onClick={() => startReview(item)} className="text-sm font-medium text-sky-700 underline underline-offset-2">{item.rule ? 'Editar revisión' : 'Marcar como revisado'}</button>
-                  {reviewing === `${item.bank}|${item.type}|${item.identity}` && <RuleEditor item={item} strategy={ruleStrategy} setStrategy={setRuleStrategy} clientId={ruleClientId} setClientId={setRuleClientId} instruction={ruleInstruction} setInstruction={setRuleInstruction} busy={busy} save={() => saveRule(item)} />}
-                </td>
-              </tr>;
-          })}</tbody></table>
+        <h2 className="text-lg font-semibold text-slate-900">Identidades</h2>
+        <p className="mt-1 text-sm text-slate-500">Filtra la evidencia histórica y revisa cómo debe procesarse cada identidad.</p>
+        <div className="mt-3 grid gap-3 border-y border-slate-200 bg-white p-3 md:grid-cols-4">
+          <Filter label="Banco" value={identityFilters.bank} onChange={(value) => setIdentityFilters((current) => ({ ...current, bank: value }))} />
+          <Filter label="Tipo" value={identityFilters.type} onChange={(value) => setIdentityFilters((current) => ({ ...current, type: value }))} />
+          <Filter label="Identidad" value={identityFilters.identity} onChange={(value) => setIdentityFilters((current) => ({ ...current, identity: value }))} />
+          <Filter label="Clientes históricos" value={identityFilters.clients} onChange={(value) => setIdentityFilters((current) => ({ ...current, clients: value }))} />
         </div>
+        <h3 className="mt-6 text-base font-semibold text-slate-900">Identidades ambiguas ({ambiguousPending.length})</h3>
+        <p className="mt-1 text-sm text-slate-500">No producen sugerencias hasta que un operador defina una regla.</p>
+        {identityTable(ambiguousPending, 'No hay identidades ambiguas con estos filtros.')}
+        <h3 className="mt-8 text-base font-semibold text-slate-900">Identidades verificadas ({verifiedIdentities.length})</h3>
+        <p className="mt-1 text-sm text-slate-500">Tienen una regla activa y pueden editarse si cambia el comportamiento.</p>
+        {identityTable(verifiedIdentities, 'Todavía no hay identidades verificadas con estos filtros.')}
       </section>
     </div>
   );
@@ -187,6 +213,10 @@ function RuleEditor({ item, strategy, setStrategy, clientId, setClientId, instru
     <label className="mt-2 block text-xs font-medium text-slate-700">Instrucción para el sistema<textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} rows={4} placeholder="Explica qué ocurrió históricamente y cómo debe procesarse en adelante." className="mt-1 w-full resize-y border border-slate-300 bg-white px-2 py-1.5 text-sm" /></label>
     <button type="button" disabled={busy || !clientId || instruction.trim().length < 12} onClick={save} className="mt-2 bg-sky-700 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">Guardar revisión</button>
   </div>;
+}
+
+function Filter({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return <label className="block text-xs font-medium text-slate-600">{label}<input value={value} onChange={(event) => onChange(event.target.value)} placeholder={`Filtrar ${label.toLowerCase()}`} className="mt-1 w-full border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900 outline-none focus:border-sky-500" /></label>;
 }
 
 function Card({ label, value, href }: { label: string; value: number; href?: string }) {

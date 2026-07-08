@@ -12,14 +12,22 @@ declare global {
 
 export const pool =
   global._kw2Pool ??
-  new Pool({
-    host: '127.0.0.1',
-    port: Number(process.env.POSTGRES_PORT ?? 5432),
-    database: process.env.POSTGRES_DB ?? 'kw2',
-    user: process.env.POSTGRES_USER ?? 'kw2_app',
-    password: process.env.POSTGRES_PASSWORD,
-    max: 5,
-  });
+  new Pool(
+    process.env.DATABASE_URL
+      ? {
+          connectionString: process.env.DATABASE_URL,
+          ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+          max: 5,
+        }
+      : {
+          host: process.env.POSTGRES_HOST ?? '127.0.0.1',
+          port: Number(process.env.POSTGRES_PORT ?? 5432),
+          database: process.env.POSTGRES_DB ?? 'kw2',
+          user: process.env.POSTGRES_USER ?? 'kw2_app',
+          password: process.env.POSTGRES_PASSWORD,
+          max: 5,
+        },
+  );
 
 if (process.env.NODE_ENV !== 'production') global._kw2Pool = pool;
 

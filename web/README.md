@@ -1,36 +1,63 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# KW2 Web
+
+Aplicación interna de KW2 Mesa. En local corre con PostgreSQL en Docker; en producción
+puede correr en Vercel usando PostgreSQL en la nube.
 
 ## Getting Started
 
-First, run the development server:
+Desde esta carpeta:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Abre [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+La app lee `.env` desde la raíz del repo en desarrollo local. Para Vercel, configura
+las mismas variables en Project Settings → Environment Variables.
 
-## Learn More
+Base de datos:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+DATABASE_URL=postgresql://...
+DATABASE_SSL=true
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+En local también funciona con:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=5432
+POSTGRES_DB=kw2
+POSTGRES_USER=kw2_app
+POSTGRES_PASSWORD=...
+```
 
-## Deploy on Vercel
+Acceso web:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+KW2_BASIC_AUTH_USERS=carlos:password1,jose:password2
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+WhatsApp:
+
+```bash
+WHATSAPP_VERIFY_TOKEN=...
+WHATSAPP_APP_SECRET=...
+WHATSAPP_ACCESS_TOKEN=...
+WHATSAPP_GRAPH_VERSION=v23.0
+```
+
+El webhook `/api/whatsapp/webhook` queda sin Basic Auth para que Meta pueda llamarlo,
+pero valida el verify token y la firma `X-Hub-Signature-256`.
+
+## Deploy En Vercel
+
+1. Sube el repo a GitHub.
+2. Crea una base PostgreSQL en la nube y restaura el dump local.
+3. En Vercel importa el repo y selecciona `web` como Root Directory.
+4. Configura las variables de entorno.
+5. Despliega.
+6. En Meta, cambia el webhook a `https://tu-app.vercel.app/api/whatsapp/webhook`.
