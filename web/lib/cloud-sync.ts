@@ -674,11 +674,37 @@ async function suggestBsMatches(db: any, output: string[]) {
   output.push(`Operaciones sugeridas: ${suggestions.length} | enlaces sugeridos: ${inserted}`);
 }
 
-export async function syncGoogleSheetCloud() {
+type CloudSyncPhase = 'base' | 'sources' | 'bs' | 'suggestions' | 'full';
+
+export async function syncGoogleSheetCloud(phase: CloudSyncPhase = 'full') {
   const output: string[] = [];
   const db = await pool.connect();
 
   try {
+    if (phase === 'sources') {
+      await db.query('BEGIN');
+      await importExternalSources(db, output);
+      await db.query('COMMIT');
+      output.push('== Listo ==');
+      return { ok: true, output: output.join('\n') };
+    }
+
+    if (phase === 'bs') {
+      await db.query('BEGIN');
+      await reconstructBsLinks(db, output);
+      await db.query('COMMIT');
+      output.push('== Listo ==');
+      return { ok: true, output: output.join('\n') };
+    }
+
+    if (phase === 'suggestions') {
+      await db.query('BEGIN');
+      await suggestBsMatches(db, output);
+      await db.query('COMMIT');
+      output.push('== Listo ==');
+      return { ok: true, output: output.join('\n') };
+    }
+
     output.push('== DATA (clientes y cuentas) ==');
     const dataRows = await readRange("'DATA'!A3:K2000");
     const clients = dataRows
@@ -930,9 +956,11 @@ export async function syncGoogleSheetCloud() {
       ],
     );
 
-    await importExternalSources(db, output);
-    await reconstructBsLinks(db, output);
-    await suggestBsMatches(db, output);
+    if (phase === 'full') {
+      await importExternalSources(db, output);
+      await reconstructBsLinks(db, output);
+      await suggestBsMatches(db, output);
+    }
 
     await db.query('COMMIT');
 

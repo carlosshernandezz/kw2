@@ -11,10 +11,38 @@ export default function SyncButton() {
     setBusy(true);
     setOutput(null);
     try {
-      const r = await fetch('/api/sync', { method: 'POST' });
-      const d = await r.json();
-      setOk(d.ok);
-      setOutput(d.output || '(sin salida)');
+      const phases = [
+        ['base', 'Base: DATA + MOVIMIENTOS'],
+        ['sources', 'Estados externos'],
+        ['bs', 'Conciliacion Bs'],
+        ['suggestions', 'Sugerencias Bs'],
+      ] as const;
+      const chunks: string[] = [];
+      for (const [phase, label] of phases) {
+        chunks.push(`\n## ${label}`);
+        setOutput(chunks.join('\n').trim());
+        const r = await fetch('/api/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phase }),
+        });
+        const text = await r.text();
+        let d: { ok?: boolean; output?: string };
+        try {
+          d = JSON.parse(text);
+        } catch {
+          throw new Error(`La fase "${label}" no devolvio JSON. HTTP ${r.status}: ${text.slice(0, 300)}`);
+        }
+        if (!r.ok || !d.ok) {
+          chunks.push(d.output || `Error HTTP ${r.status}`);
+          setOk(false);
+          setOutput(chunks.join('\n').trim());
+          return;
+        }
+        chunks.push(d.output || '(sin salida)');
+        setOutput(chunks.join('\n').trim());
+      }
+      setOk(true);
     } catch (e) {
       setOk(false);
       setOutput(String(e));

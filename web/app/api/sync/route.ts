@@ -8,10 +8,12 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 // Corre la sincronizacion local con el Sheet y devuelve su salida.
-export async function POST() {
+export async function POST(request: Request) {
   if (process.env.VERCEL) {
     try {
-      const result = await syncGoogleSheetCloud();
+      const body = await request.json().catch(() => ({}));
+      const phase = typeof body.phase === 'string' ? body.phase : 'full';
+      const result = await syncGoogleSheetCloud(phase);
       return NextResponse.json(result);
     } catch (error: any) {
       return NextResponse.json({ ok: false, output: error.message ?? String(error) }, { status: 500 });
