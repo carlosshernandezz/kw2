@@ -7,9 +7,10 @@ import { syncGoogleSheetCloud } from '@/lib/cloud-sync';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
-// Corre la sincronizacion local con el Sheet y devuelve su salida.
+// Corre la sincronizacion con el Sheet y devuelve su salida.
 export async function POST(request: Request) {
-  if (process.env.VERCEL) {
+  const hasCloudSyncConfig = Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+  if (hasCloudSyncConfig) {
     try {
       const body = await request.json().catch(() => ({}));
       const phase = typeof body.phase === 'string' ? body.phase : 'full';
@@ -27,7 +28,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: false,
-        output: `No encontré el script local de sincronización: ${script}`,
+        output: `No encontré el script local de sincronización: ${script}. Si estás en Vercel, falta GOOGLE_SERVICE_ACCOUNT_JSON.`,
       },
       { status: 500 },
     );
