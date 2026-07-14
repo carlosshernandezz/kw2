@@ -2,10 +2,20 @@ import { NextResponse } from 'next/server';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { syncGoogleSheetCloud } from '@/lib/cloud-sync';
+import { syncGoogleSheetCloud, type CloudSyncPhase } from '@/lib/cloud-sync';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
+
+const CLOUD_PHASES = new Set<CloudSyncPhase>([
+  'data',
+  'movimientos-snapshot',
+  'movimientos-reimport',
+  'movimientos-finalize',
+  'sources',
+  'bs',
+  'suggestions',
+]);
 
 // Corre la sincronizacion con el Sheet y devuelve su salida.
 export async function POST(request: Request) {
@@ -13,8 +23,16 @@ export async function POST(request: Request) {
   if (hasCloudSyncConfig) {
     try {
       const body = await request.json().catch(() => ({}));
-      const phase = typeof body.phase === 'string' ? body.phase : 'full';
-      const result = await syncGoogleSheetCloud(phase);
+      if (typeof body.phase !== 'string' || !CLOUD_PHASES.has(body.phase as CloudSyncPhase)) {
+        return NextResponse.json({ ok: false, output: 'Fase de sincronizacion invalida.' }, { status: 400 });
+      }
+      const phase = body.phase as CloudSyncPhase;
+      const rawOffset = Number(body.offset);
+      const rawLimit = Number(body.limit);
+      const offset = Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : undefined;
+      const limit = Number.isInteger(rawLimit) && rawLimit >= 1 && rawLimit <= 750 ? rawLimit : undefined;
+      const batchId = typeof body.batchId === 'string' ? body.batchId : undefined;
+      const result = await syncGoogleSheetCloud(phase, { batchId, offset, limit });
       return NextResponse.json(result);
     } catch (error: any) {
       return NextResponse.json({ ok: false, output: error.message ?? String(error) }, { status: 500 });

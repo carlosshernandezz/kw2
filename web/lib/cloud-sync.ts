@@ -1,4 +1,5 @@
 import { google } from 'googleapis';
+import { randomUUID } from 'node:crypto';
 import { pool } from './db';
 
 const SHEET_ID = process.env.KW2_SHEET_ID ?? '1bVhtBhS_cEDAnET8q5t4d4tT3pDE_bvEFD0oYjWaNWo';
@@ -90,6 +91,18 @@ type IdentityOwner = {
   ruleInstruction?: string;
 };
 type Suggestion = { ledger: Ledger; rows: Statement[]; confidence: number; identity: Identity; owner: IdentityOwner; evidence: number };
+type SyncAccount = { id: number; name: string; medium: string };
+
+function movimientosSnapshotAccount(batchId: string): string {
+  return `MOVIMIENTOS:${batchId}`;
+}
+
+function requireBatchId(batchId: string | undefined): string {
+  if (!batchId || !/^[0-9a-f-]{36}$/i.test(batchId)) {
+    throw new Error('La sincronizacion no tiene un batchId valido. Inicia de nuevo desde el boton.');
+  }
+  return batchId;
+}
 
 function serviceAccountCredentials() {
   const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
@@ -674,13 +687,366 @@ async function suggestBsMatches(db: any, output: string[]) {
   output.push(`Operaciones sugeridas: ${suggestions.length} | enlaces sugeridos: ${inserted}`);
 }
 
-type CloudSyncPhase = 'base' | 'sources' | 'bs' | 'suggestions' | 'full';
+export type CloudSyncPhase =
+  | 'data'
+  | 'movimientos-snapshot'
+  | 'movimientos-reimport'
+  | 'movimientos-finalize'
+  | 'sources'
+  | 'bs'
+  | 'suggestions';
 
-export async function syncGoogleSheetCloud(phase: CloudSyncPhase = 'full') {
+async function syncDataCloud(db: any, output: string[]) {
+  output.push('== DATA (clientes y cuentas) ==');
+  const dataRows = await readRange("'DATA'!A3:K2000");
+  const clients = dataRows
+    .filter((r) => r[0] !== '' && r[0] != null && String(r[2] ?? '').trim() !== '')
+    .map((r) => ({
+      legacyId: Number(r[0]),
+      shortName: String(r[1] ?? '').trim() || null,
+      name: String(r[2]).trim(),
+    }))
+    .filter((c) => !SKIPPED_CLIENT_IDS.has(c.legacyId));
+
+  const accounts = dataRows
+    .filter((r) => String(r[5] ?? '').trim() !== '' && String(r[6] ?? '').trim() !== '')
+    .map((r) => ({ legacyId: String(r[5]).trim(), name: String(r[6]).trim() }))
+    .filter((a) => !SKIPPED_ACCOUNTS.has(a.legacyId));
+
+  const missingSpec = accounts.filter((a) => !ACCOUNT_SPECS[a.legacyId]);
+  if (missingSpec.length > 0) {
+    throw new Error(`Cuentas sin especificacion: ${missingSpec.map((a) => `${a.legacyId} ${a.name}`).join(', ')}`);
+  }
+
+  let clientsInserted = 0;
+  let clientsUpdated = 0;
+  for (const c of clients) {
+    const kind = isSystemClient(c.name) ? 'system' : 'client';
+    const res = await db.query(
+      `INSERT INTO clients (legacy_id, name, short_name, kind)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (legacy_id) DO UPDATE
+         SET name = EXCLUDED.name,
+             short_name = EXCLUDED.short_name,
+             kind = EXCLUDED.kind,
+             updated_at = now()
+       RETURNING (xmax = 0) AS inserted`,
+      [String(c.legacyId), c.name, c.shortName, kind],
+    );
+    res.rows[0].inserted ? clientsInserted++ : clientsUpdated++;
+  }
+
+  let accountsInserted = 0;
+  let accountsUpdated = 0;
+  for (const a of accounts) {
+    const spec = ACCOUNT_SPECS[a.legacyId];
+    const res = await db.query(
+      `INSERT INTO accounts (legacy_id, name, medium, native_currency, bank_fee_rate)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (legacy_id) DO UPDATE
+         SET name = EXCLUDED.name,
+             medium = EXCLUDED.medium,
+             native_currency = EXCLUDED.native_currency,
+             bank_fee_rate = EXCLUDED.bank_fee_rate,
+             updated_at = now()
+       RETURNING (xmax = 0) AS inserted`,
+      [a.legacyId, a.name, spec.medium, spec.currency, spec.feeRate ?? null],
+    );
+    res.rows[0].inserted ? accountsInserted++ : accountsUpdated++;
+  }
+
+  output.push(`Clientes: ${clientsInserted} insertados, ${clientsUpdated} actualizados (${clients.length} leidos)`);
+  output.push(`Cuentas: ${accountsInserted} insertadas, ${accountsUpdated} actualizadas (${accounts.length} leidas)`);
+}
+
+async function syncMovimientosSnapshotCloud(db: any, output: string[]) {
+  output.push('== MOVIMIENTOS (snapshot) ==');
+  const movimientoRows = await readRange("'MOVIMIENTOS'!A2:S100000");
+  const records = movimientoRows
+    .map((row, i) => {
+      const payload: Record<string, unknown> = { row_number: i + 2 };
+      COLUMNS.forEach((name, idx) => (payload[name] = row[idx] ?? null));
+      return payload;
+    })
+    .filter((p) => typeof p.fecha === 'number' && (p.id_banco || p.id_cliente));
+
+  const batchId = randomUUID();
+  const snapshotAccount = movimientosSnapshotAccount(batchId);
+
+  const CHUNK = 500;
+  let insertedSnapshot = 0;
+  for (let i = 0; i < records.length; i += CHUNK) {
+    const chunk = records.slice(i, i + CHUNK);
+    const values: unknown[] = [];
+    const tuples = chunk.map((p, j) => {
+      const credito = typeof p.monto_credito === 'number' ? p.monto_credito : null;
+      const debito = typeof p.monto_debito === 'number' ? p.monto_debito : null;
+      const amount = credito ?? (debito != null ? Math.abs(debito) : null);
+      const direction = credito != null ? 'inflow' : debito != null ? 'outflow' : null;
+      const base = j * 7;
+      values.push(
+        String(p.row_number),
+        serialToDate(p.fecha as number),
+        direction,
+        amount,
+        p.nombre ?? null,
+        JSON.stringify(p),
+        batchId,
+      );
+      return `('google_sheet', '${snapshotAccount}', $${base + 1}, $${base + 2}, $${base + 3}, 'USD', $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`;
+    });
+    const res = await db.query(
+      `INSERT INTO external_transactions
+         (source_type, source_account, external_id, effective_at, direction,
+          native_currency, native_amount, description, raw_payload, import_batch_id)
+       VALUES ${tuples.join(', ')}`,
+      values,
+    );
+    insertedSnapshot += res.rowCount ?? 0;
+  }
+
+  output.push(`Filas leidas: ${movimientoRows.length} | validas: ${records.length}`);
+  output.push(`Snapshot ${batchId}: ${insertedSnapshot} filas insertadas`);
+  return { batchId, totalRows: records.length };
+}
+
+async function syncMovimientosReimportCloud(db: any, output: string[], batchId: string, offset: number, limit: number) {
+  const snapshotAccount = movimientosSnapshotAccount(requireBatchId(batchId));
+  output.push(`== Reimport seguro MOVIMIENTOS (${offset + 1}-${offset + limit}) ==`);
+  const accountsRes = await db.query(`SELECT id, name, medium FROM accounts`);
+  const accountByName = new Map<string, SyncAccount>(accountsRes.rows.map((a: SyncAccount) => [a.name, a]));
+  const clientsRes = await db.query(`SELECT id, legacy_id FROM clients WHERE legacy_id IS NOT NULL`);
+  const clientByLegacy = new Map(clientsRes.rows.map((c: any) => [c.legacy_id, c.id]));
+
+  const dupRows = await db.query(
+    `SELECT raw_payload->>'kw2_id' kw2_id, count(*) c
+     FROM external_transactions
+     WHERE source_type='google_sheet' AND source_account=$1
+       AND NULLIF(raw_payload->>'kw2_id','') IS NOT NULL
+     GROUP BY 1 HAVING count(*) > 1`,
+    [snapshotAccount],
+  );
+  const dupSet = new Set(dupRows.rows.map((r: any) => r.kw2_id));
+
+  const snap = await db.query(
+    `SELECT id, raw_payload p FROM external_transactions
+     WHERE source_type='google_sheet' AND source_account=$1
+     ORDER BY (raw_payload->>'row_number')::int
+     LIMIT $2 OFFSET $3`,
+    [snapshotAccount, limit, offset],
+  );
+
+  const skipped: { rn: number; reason: string }[] = [];
+  const rows: any[] = [];
+  for (const { id: snapshotId, p } of snap.rows) {
+    const rn = Number(p.row_number);
+    const kw2 = String(p.kw2_id ?? '').trim();
+    if (!kw2) {
+      skipped.push({ rn, reason: 'sin kw2_id' });
+      continue;
+    }
+    if (dupSet.has(kw2)) {
+      skipped.push({ rn, reason: `kw2_id duplicado: ${kw2}` });
+      continue;
+    }
+
+    const account = accountByName.get(String(p.banco ?? '').trim());
+    if (!account) {
+      skipped.push({ rn, reason: `banco desconocido: ${p.banco}` });
+      continue;
+    }
+    const credito = typeof p.monto_credito === 'number' ? p.monto_credito : null;
+    const debito = typeof p.monto_debito === 'number' ? p.monto_debito : null;
+    const usd = Math.abs(credito ?? debito ?? 0);
+    if (usd === 0) {
+      skipped.push({ rn, reason: 'monto cero' });
+      continue;
+    }
+    const tipo = String(p.tipo ?? '').trim();
+    if (tipo !== 'Ingreso' && tipo !== 'Egreso') {
+      skipped.push({ rn, reason: `tipo invalido: ${tipo}` });
+      continue;
+    }
+    if (tipo === 'Ingreso' && (credito == null || credito < 0)) {
+      skipped.push({ rn, reason: 'signo inconsistente con Ingreso' });
+      continue;
+    }
+    if (tipo === 'Egreso' && (debito == null || debito > 0)) {
+      skipped.push({ rn, reason: 'signo inconsistente con Egreso' });
+      continue;
+    }
+
+    const clientId = clientByLegacy.get(String(p.id_cliente ?? '')) ?? null;
+    const tasa = typeof p.tasa === 'number' && p.tasa > 0 ? p.tasa : null;
+    const montoBs = typeof p.monto_bs === 'number' ? Math.abs(p.monto_bs) : null;
+    const useBs = account.medium === 'bs' && montoBs != null && montoBs > 0;
+
+    rows.push({
+      kw2,
+      accountId: account.id,
+      clientId,
+      direction: tipo === 'Ingreso' ? 'inflow' : 'outflow',
+      medium: account.medium,
+      currency: useBs ? 'VES' : 'USD',
+      native: useBs ? montoBs : usd,
+      usd,
+      rate: tasa,
+      date: serialToDate(Number(p.fecha)),
+      sender: String(p.emisor_beneficiario ?? '').trim() || null,
+      payload: p,
+      snapshotId,
+    });
+  }
+
+  let inserted = 0;
+  let updated = 0;
+  const importedSnapshotIds: number[] = [];
+  for (const r of rows) {
+    const res = await db.query(
+      `INSERT INTO fund_movements
+         (kw2_id, account_id, client_id, direction, medium, native_currency, native_amount,
+          usd_amount, exchange_rate, effective_at, sender_or_recipient, source, source_payload)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,($10::date)::timestamptz,$11,$12,$13)
+       ON CONFLICT (kw2_id) WHERE kw2_id IS NOT NULL DO UPDATE SET
+         account_id=EXCLUDED.account_id, client_id=EXCLUDED.client_id, direction=EXCLUDED.direction,
+         medium=EXCLUDED.medium, native_currency=EXCLUDED.native_currency, native_amount=EXCLUDED.native_amount,
+         usd_amount=EXCLUDED.usd_amount, exchange_rate=EXCLUDED.exchange_rate, effective_at=EXCLUDED.effective_at,
+         sender_or_recipient=EXCLUDED.sender_or_recipient, source_payload=EXCLUDED.source_payload, updated_at=now()
+       RETURNING (xmax = 0) AS inserted`,
+      [r.kw2, r.accountId, r.clientId, r.direction, r.medium, r.currency, r.native, r.usd, r.rate, r.date, r.sender, SOURCE, JSON.stringify(r.payload)],
+    );
+    res.rows[0].inserted ? inserted++ : updated++;
+    importedSnapshotIds.push(r.snapshotId);
+  }
+
+  if (importedSnapshotIds.length > 0) {
+    await db.query(
+      `UPDATE external_transactions
+       SET raw_payload = raw_payload || jsonb_build_object('kw2_sync_imported_batch', $2)
+       WHERE id = ANY($1::bigint[])`,
+      [importedSnapshotIds, batchId],
+    );
+  }
+
+  output.push(`Procesadas: ${snap.rows.length} | insertados ${inserted} | actualizados ${updated} | omitidos ${skipped.length}`);
+  return { done: snap.rows.length < limit, nextOffset: offset + snap.rows.length };
+}
+
+async function syncMovimientosFinalizeCloud(db: any, output: string[], batchId: string) {
+  const snapshotAccount = movimientosSnapshotAccount(requireBatchId(batchId));
+  output.push('== Finalizar MOVIMIENTOS ==');
+  const latest = await db.query(
+    `SELECT source_account
+     FROM external_transactions
+     WHERE source_type='google_sheet' AND source_account LIKE 'MOVIMIENTOS:%'
+     GROUP BY source_account
+     ORDER BY max(created_at) DESC, source_account DESC
+     LIMIT 1`,
+  );
+  if (latest.rows[0]?.source_account !== snapshotAccount) {
+    throw new Error('Existe una sincronizacion mas reciente. Esta ejecucion no puede finalizar ni anular movimientos.');
+  }
+
+  const readiness = await db.query(
+    `SELECT
+       count(*) FILTER (WHERE NULLIF(raw_payload->>'kw2_id','') IS NOT NULL)::int AS expected,
+       count(*) FILTER (
+         WHERE NULLIF(raw_payload->>'kw2_id','') IS NOT NULL
+           AND raw_payload->>'kw2_sync_imported_batch'=$2
+       )::int AS imported
+     FROM external_transactions
+     WHERE source_type='google_sheet' AND source_account=$1`,
+    [snapshotAccount, batchId],
+  );
+  const expected = readiness.rows[0]?.expected ?? 0;
+  const imported = readiness.rows[0]?.imported ?? 0;
+  if (expected === 0) throw new Error('El snapshot no contiene movimientos con kw2_id. Se cancela el cierre por seguridad.');
+  if (imported !== expected) {
+    throw new Error(`Faltan ${expected - imported} movimientos por reimportar o corregir. No se anulo ningun movimiento.`);
+  }
+
+  const snapshotKw2Rows = await db.query(
+    `SELECT raw_payload->>'kw2_id' kw2_id
+     FROM external_transactions
+     WHERE source_type='google_sheet' AND source_account=$1
+       AND NULLIF(raw_payload->>'kw2_id','') IS NOT NULL`,
+    [snapshotAccount],
+  );
+  const snapshotKw2 = snapshotKw2Rows.rows.map((r: any) => r.kw2_id);
+
+  const voidRes = await db.query(
+    `UPDATE fund_movements SET status='voided', updated_at=now()
+     WHERE source=$1 AND status<>'voided' AND kw2_id IS NOT NULL AND NOT (kw2_id = ANY($2::text[]))
+     RETURNING id, kw2_id,
+       (SELECT count(*) FROM reconciliations r WHERE r.fund_movement_id=fund_movements.id AND r.status<>'rejected') AS recon`,
+    [SOURCE, snapshotKw2],
+  );
+  const voidedWithRecon = voidRes.rows.filter((r: any) => Number(r.recon) > 0);
+
+  const flagged = await db.query(
+    `UPDATE fund_movements f SET status = CASE
+       WHEN s.c = 0 THEN 'posted'
+       WHEN abs(s.c - f.usd_amount) <= $2 THEN 'reconciled'
+       ELSE 'needs_review' END, updated_at=now()
+     FROM (SELECT fund_movement_id, COALESCE(SUM(allocated_native_amount),0) c
+           FROM reconciliations WHERE status='confirmed' GROUP BY fund_movement_id) s
+     WHERE f.id=s.fund_movement_id AND f.source=$1 AND f.status<>'voided' AND f.medium <> 'bs'
+     RETURNING f.id, f.status, f.kw2_id, f.usd_amount, s.c`,
+    [SOURCE, TOL],
+  );
+  const needsReview = flagged.rows.filter((r: any) => r.status === 'needs_review');
+
+  await db.query(
+    `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state)
+     VALUES ('app_web','sync-google-sheet','cloud_safe_reimport_finalize','account','MOVIMIENTOS',$1)`,
+    [JSON.stringify({ batch_id: batchId, voided: voidRes.rowCount, voided_with_recon: voidedWithRecon.length, needs_review: needsReview.length })],
+  );
+
+  output.push(`Anulados: ${voidRes.rowCount}`);
+  if (voidedWithRecon.length > 0) output.push(`${voidedWithRecon.length} anulados tenían conciliaciones: revisar.`);
+  if (needsReview.length > 0) output.push(`${needsReview.length} movimientos quedaron needs_review.`);
+}
+
+export async function syncGoogleSheetCloud(
+  phase: CloudSyncPhase,
+  options: { batchId?: string; offset?: number; limit?: number } = {},
+) {
   const output: string[] = [];
   const db = await pool.connect();
 
   try {
+    if (phase === 'data') {
+      await db.query('BEGIN');
+      await syncDataCloud(db, output);
+      await db.query('COMMIT');
+      output.push('== Listo ==');
+      return { ok: true, output: output.join('\n') };
+    }
+
+    if (phase === 'movimientos-snapshot') {
+      await db.query('BEGIN');
+      const snapshot = await syncMovimientosSnapshotCloud(db, output);
+      await db.query('COMMIT');
+      output.push('== Listo ==');
+      return { ok: true, output: output.join('\n'), ...snapshot };
+    }
+
+    if (phase === 'movimientos-reimport') {
+      await db.query('BEGIN');
+      const progress = await syncMovimientosReimportCloud(db, output, requireBatchId(options.batchId), options.offset ?? 0, options.limit ?? 750);
+      await db.query('COMMIT');
+      output.push(progress.done ? '== Listo ==' : `Siguiente lote: ${progress.nextOffset}`);
+      return { ok: true, output: output.join('\n'), ...progress };
+    }
+
+    if (phase === 'movimientos-finalize') {
+      await db.query('BEGIN');
+      await syncMovimientosFinalizeCloud(db, output, requireBatchId(options.batchId));
+      await db.query('COMMIT');
+      output.push('== Listo ==');
+      return { ok: true, output: output.join('\n') };
+    }
+
     if (phase === 'sources') {
       await db.query('BEGIN');
       await importExternalSources(db, output);
@@ -705,273 +1071,7 @@ export async function syncGoogleSheetCloud(phase: CloudSyncPhase = 'full') {
       return { ok: true, output: output.join('\n') };
     }
 
-    output.push('== DATA (clientes y cuentas) ==');
-    const dataRows = await readRange("'DATA'!A3:K2000");
-    const clients = dataRows
-      .filter((r) => r[0] !== '' && r[0] != null && String(r[2] ?? '').trim() !== '')
-      .map((r) => ({
-        legacyId: Number(r[0]),
-        shortName: String(r[1] ?? '').trim() || null,
-        name: String(r[2]).trim(),
-      }))
-      .filter((c) => !SKIPPED_CLIENT_IDS.has(c.legacyId));
-
-    const accounts = dataRows
-      .filter((r) => String(r[5] ?? '').trim() !== '' && String(r[6] ?? '').trim() !== '')
-      .map((r) => ({ legacyId: String(r[5]).trim(), name: String(r[6]).trim() }))
-      .filter((a) => !SKIPPED_ACCOUNTS.has(a.legacyId));
-
-    const missingSpec = accounts.filter((a) => !ACCOUNT_SPECS[a.legacyId]);
-    if (missingSpec.length > 0) {
-      throw new Error(`Cuentas sin especificacion: ${missingSpec.map((a) => `${a.legacyId} ${a.name}`).join(', ')}`);
-    }
-
-    await db.query('BEGIN');
-
-    let clientsInserted = 0;
-    let clientsUpdated = 0;
-    for (const c of clients) {
-      const kind = isSystemClient(c.name) ? 'system' : 'client';
-      const res = await db.query(
-        `INSERT INTO clients (legacy_id, name, short_name, kind)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (legacy_id) DO UPDATE
-           SET name = EXCLUDED.name,
-               short_name = EXCLUDED.short_name,
-               kind = EXCLUDED.kind,
-               updated_at = now()
-         RETURNING (xmax = 0) AS inserted`,
-        [String(c.legacyId), c.name, c.shortName, kind],
-      );
-      res.rows[0].inserted ? clientsInserted++ : clientsUpdated++;
-    }
-
-    let accountsInserted = 0;
-    let accountsUpdated = 0;
-    for (const a of accounts) {
-      const spec = ACCOUNT_SPECS[a.legacyId];
-      const res = await db.query(
-        `INSERT INTO accounts (legacy_id, name, medium, native_currency, bank_fee_rate)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (legacy_id) DO UPDATE
-           SET name = EXCLUDED.name,
-               medium = EXCLUDED.medium,
-               native_currency = EXCLUDED.native_currency,
-               bank_fee_rate = EXCLUDED.bank_fee_rate,
-               updated_at = now()
-         RETURNING (xmax = 0) AS inserted`,
-        [a.legacyId, a.name, spec.medium, spec.currency, spec.feeRate ?? null],
-      );
-      res.rows[0].inserted ? accountsInserted++ : accountsUpdated++;
-    }
-
-    output.push(`Clientes: ${clientsInserted} insertados, ${clientsUpdated} actualizados (${clients.length} leidos)`);
-    output.push(`Cuentas: ${accountsInserted} insertadas, ${accountsUpdated} actualizadas (${accounts.length} leidas)`);
-
-    output.push('== MOVIMIENTOS (snapshot) ==');
-    const movimientoRows = await readRange("'MOVIMIENTOS'!A2:S100000");
-    const records = movimientoRows
-      .map((row, i) => {
-        const payload: Record<string, unknown> = { row_number: i + 2 };
-        COLUMNS.forEach((name, idx) => (payload[name] = row[idx] ?? null));
-        return payload;
-      })
-      .filter((p) => typeof p.fecha === 'number' && (p.id_banco || p.id_cliente));
-
-    const batchId = `movimientos-${new Date().toISOString()}`;
-    const del = await db.query(
-      `DELETE FROM external_transactions
-       WHERE source_type = 'google_sheet' AND source_account = 'MOVIMIENTOS'`,
-    );
-
-    const CHUNK = 500;
-    let insertedSnapshot = 0;
-    for (let i = 0; i < records.length; i += CHUNK) {
-      const chunk = records.slice(i, i + CHUNK);
-      const values: unknown[] = [];
-      const tuples = chunk.map((p, j) => {
-        const credito = typeof p.monto_credito === 'number' ? p.monto_credito : null;
-        const debito = typeof p.monto_debito === 'number' ? p.monto_debito : null;
-        const amount = credito ?? (debito != null ? Math.abs(debito) : null);
-        const direction = credito != null ? 'inflow' : debito != null ? 'outflow' : null;
-        const base = j * 7;
-        values.push(
-          String(p.row_number),
-          serialToDate(p.fecha as number),
-          direction,
-          amount,
-          p.nombre ?? null,
-          JSON.stringify(p),
-          batchId,
-        );
-        return `('google_sheet', 'MOVIMIENTOS', $${base + 1}, $${base + 2}, $${base + 3}, 'USD', $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`;
-      });
-      const res = await db.query(
-        `INSERT INTO external_transactions
-           (source_type, source_account, external_id, effective_at, direction,
-            native_currency, native_amount, description, raw_payload, import_batch_id)
-         VALUES ${tuples.join(', ')}`,
-        values,
-      );
-      insertedSnapshot += res.rowCount ?? 0;
-    }
-
-    output.push(`Filas leidas: ${movimientoRows.length} | validas: ${records.length}`);
-    output.push(`Snapshot anterior borrado: ${del.rowCount} filas | insertadas: ${insertedSnapshot}`);
-
-    output.push('== Reimport seguro (por kw2_id) ==');
-    const accountsRes = await db.query(`SELECT id, name, medium FROM accounts`);
-    const accountByName = new Map(accountsRes.rows.map((a) => [a.name, a]));
-    const clientsRes = await db.query(`SELECT id, legacy_id FROM clients WHERE legacy_id IS NOT NULL`);
-    const clientByLegacy = new Map(clientsRes.rows.map((c) => [c.legacy_id, c.id]));
-    const snap = await db.query(
-      `SELECT raw_payload p FROM external_transactions
-       WHERE source_type='google_sheet' AND source_account='MOVIMIENTOS'
-       ORDER BY (raw_payload->>'row_number')::int`,
-    );
-
-    const skipped: { rn: number; reason: string }[] = [];
-    const rows: any[] = [];
-    const snapshotKw2 = new Set<string>();
-    const kw2Count = new Map<string, number>();
-    for (const { p } of snap.rows) {
-      const k = String(p.kw2_id ?? '').trim();
-      if (k) kw2Count.set(k, (kw2Count.get(k) ?? 0) + 1);
-    }
-    const dupSet = new Set([...kw2Count].filter(([, count]) => count > 1).map(([k]) => k));
-
-    for (const { p } of snap.rows) {
-      const rn = Number(p.row_number);
-      const kw2 = String(p.kw2_id ?? '').trim();
-      if (!kw2) {
-        skipped.push({ rn, reason: 'sin kw2_id' });
-        continue;
-      }
-      snapshotKw2.add(kw2);
-      if (dupSet.has(kw2)) {
-        skipped.push({ rn, reason: `kw2_id duplicado: ${kw2}` });
-        continue;
-      }
-
-      const account = accountByName.get(String(p.banco ?? '').trim());
-      if (!account) {
-        skipped.push({ rn, reason: `banco desconocido: ${p.banco}` });
-        continue;
-      }
-      const credito = typeof p.monto_credito === 'number' ? p.monto_credito : null;
-      const debito = typeof p.monto_debito === 'number' ? p.monto_debito : null;
-      const usd = Math.abs(credito ?? debito ?? 0);
-      if (usd === 0) {
-        skipped.push({ rn, reason: 'monto cero' });
-        continue;
-      }
-      const tipo = String(p.tipo ?? '').trim();
-      if (tipo !== 'Ingreso' && tipo !== 'Egreso') {
-        skipped.push({ rn, reason: `tipo invalido: ${tipo}` });
-        continue;
-      }
-      if (tipo === 'Ingreso' && (credito == null || credito < 0)) {
-        skipped.push({ rn, reason: 'signo inconsistente con Ingreso' });
-        continue;
-      }
-      if (tipo === 'Egreso' && (debito == null || debito > 0)) {
-        skipped.push({ rn, reason: 'signo inconsistente con Egreso' });
-        continue;
-      }
-
-      const clientId = clientByLegacy.get(String(p.id_cliente ?? '')) ?? null;
-      const tasa = typeof p.tasa === 'number' && p.tasa > 0 ? p.tasa : null;
-      const montoBs = typeof p.monto_bs === 'number' ? Math.abs(p.monto_bs) : null;
-      const useBs = account.medium === 'bs' && montoBs != null && montoBs > 0;
-
-      rows.push({
-        kw2,
-        accountId: account.id,
-        clientId,
-        direction: tipo === 'Ingreso' ? 'inflow' : 'outflow',
-        medium: account.medium,
-        currency: useBs ? 'VES' : 'USD',
-        native: useBs ? montoBs : usd,
-        usd,
-        rate: tasa,
-        date: serialToDate(Number(p.fecha)),
-        sender: String(p.emisor_beneficiario ?? '').trim() || null,
-        payload: p,
-      });
-    }
-
-    let inserted = 0;
-    let updated = 0;
-    for (const r of rows) {
-      const res = await db.query(
-        `INSERT INTO fund_movements
-           (kw2_id, account_id, client_id, direction, medium, native_currency, native_amount,
-            usd_amount, exchange_rate, effective_at, sender_or_recipient, source, source_payload)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,($10::date)::timestamptz,$11,$12,$13)
-         ON CONFLICT (kw2_id) WHERE kw2_id IS NOT NULL DO UPDATE SET
-           account_id=EXCLUDED.account_id, client_id=EXCLUDED.client_id, direction=EXCLUDED.direction,
-           medium=EXCLUDED.medium, native_currency=EXCLUDED.native_currency, native_amount=EXCLUDED.native_amount,
-           usd_amount=EXCLUDED.usd_amount, exchange_rate=EXCLUDED.exchange_rate, effective_at=EXCLUDED.effective_at,
-           sender_or_recipient=EXCLUDED.sender_or_recipient, source_payload=EXCLUDED.source_payload, updated_at=now()
-         RETURNING (xmax = 0) AS inserted`,
-        [r.kw2, r.accountId, r.clientId, r.direction, r.medium, r.currency, r.native, r.usd, r.rate, r.date, r.sender, SOURCE, JSON.stringify(r.payload)],
-      );
-      res.rows[0].inserted ? inserted++ : updated++;
-    }
-
-    const voidRes = await db.query(
-      `UPDATE fund_movements SET status='voided', updated_at=now()
-       WHERE source=$1 AND status<>'voided' AND kw2_id IS NOT NULL AND NOT (kw2_id = ANY($2::text[]))
-       RETURNING id, kw2_id,
-         (SELECT count(*) FROM reconciliations r WHERE r.fund_movement_id=fund_movements.id AND r.status<>'rejected') AS recon`,
-      [SOURCE, [...snapshotKw2]],
-    );
-    const voidedWithRecon = voidRes.rows.filter((r: any) => Number(r.recon) > 0);
-
-    const flagged = await db.query(
-      `UPDATE fund_movements f SET status = CASE
-         WHEN s.c = 0 THEN 'posted'
-         WHEN abs(s.c - f.usd_amount) <= $2 THEN 'reconciled'
-         ELSE 'needs_review' END, updated_at=now()
-       FROM (SELECT fund_movement_id, COALESCE(SUM(allocated_native_amount),0) c
-             FROM reconciliations WHERE status='confirmed' GROUP BY fund_movement_id) s
-       WHERE f.id=s.fund_movement_id AND f.source=$1 AND f.status<>'voided' AND f.medium <> 'bs'
-       RETURNING f.id, f.status, f.kw2_id, f.usd_amount, s.c`,
-      [SOURCE, TOL],
-    );
-    const needsReview = flagged.rows.filter((r: any) => r.status === 'needs_review');
-
-    await db.query(
-      `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state)
-       VALUES ('app_web','sync-google-sheet','cloud_safe_reimport','account','MOVIMIENTOS',$1)`,
-      [
-        JSON.stringify({
-          clients: { read: clients.length, inserted: clientsInserted, updated: clientsUpdated },
-          accounts: { read: accounts.length, inserted: accountsInserted, updated: accountsUpdated },
-          movimientos: { rows_read: movimientoRows.length, rows_valid: records.length, snapshot_inserted: insertedSnapshot },
-          reimport: { inserted, updated, voided: voidRes.rowCount, voided_with_recon: voidedWithRecon.length, needs_review: needsReview.length, skipped: skipped.length },
-          skipped_accounts: [...SKIPPED_ACCOUNTS],
-          merged_clients: MERGED_LEGACY_IDS,
-        }),
-      ],
-    );
-
-    if (phase === 'full') {
-      await importExternalSources(db, output);
-      await reconstructBsLinks(db, output);
-      await suggestBsMatches(db, output);
-    }
-
-    await db.query('COMMIT');
-
-    output.push(`Insertados: ${inserted} | Actualizados: ${updated} | Anulados: ${voidRes.rowCount}`);
-    output.push(`Omitidos: ${skipped.length}`);
-    if (dupSet.size > 0) output.push(`kw2_id duplicados no procesados: ${[...dupSet].join(', ')}`);
-    if (voidedWithRecon.length > 0) output.push(`${voidedWithRecon.length} anulados tenían conciliaciones: revisar.`);
-    if (needsReview.length > 0) output.push(`${needsReview.length} movimientos quedaron needs_review.`);
-    output.push('== Listo ==');
-
-    return { ok: true, output: output.join('\n') };
+    throw new Error(`Fase no soportada: ${phase}`);
   } catch (error) {
     await db.query('ROLLBACK').catch(() => undefined);
     throw error;
