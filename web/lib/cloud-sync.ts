@@ -377,7 +377,7 @@ async function importExternalSources(db: any, output: string[]) {
 
     await db.query(
       `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state)
-       VALUES ('app_web', 'sync-google-sheet', 'import_source_snapshot', 'import_run', $1, $2)`,
+       VALUES ('importer', 'sync-google-sheet', 'import_source_snapshot', 'import_run', $1, $2)`,
       [batchId, JSON.stringify({ source_type: sourceType, source_account: sourceAccount, deleted_previous: del.rowCount, inserted })],
     );
     output.push(`${sourceAccount}: ${inserted} filas (reemplazo ${del.rowCount} previas)`);
@@ -455,7 +455,7 @@ async function reconstructBsLinks(db: any, output: string[]) {
 
   await db.query(
     `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state)
-     VALUES ('app_web','sync-google-sheet','reconstruct_bs_reconciliations','account','EDO CTA BS',$1)`,
+     VALUES ('importer','sync-google-sheet','reconstruct_bs_reconciliations','account','EDO CTA BS',$1)`,
     [JSON.stringify({ linked, movimientos_conciliados: fmReconciled.size, skipped })],
   );
 
@@ -670,7 +670,7 @@ async function suggestBsMatches(db: any, output: string[]) {
 
   await db.query(
     `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state)
-     VALUES ('app_web','sync-google-sheet','suggest_bs_reconciliations','account','EDO CTA BS',$1)`,
+     VALUES ('importer','sync-google-sheet','suggest_bs_reconciliations','account','EDO CTA BS',$1)`,
     [JSON.stringify({
       identities_univocas: identityMap.size,
       identities_ambiguas: ambiguousIdentities,
@@ -1001,7 +1001,7 @@ async function syncMovimientosFinalizeCloud(db: any, output: string[], batchId: 
 
   await db.query(
     `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state)
-     VALUES ('app_web','sync-google-sheet','cloud_safe_reimport_finalize','account','MOVIMIENTOS',$1)`,
+     VALUES ('importer','sync-google-sheet','cloud_safe_reimport_finalize','account','MOVIMIENTOS',$1)`,
     [JSON.stringify({ batch_id: batchId, voided: voidRes.rowCount, voided_with_recon: voidedWithRecon.length, needs_review: needsReview.length })],
   );
 
