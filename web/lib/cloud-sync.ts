@@ -929,6 +929,9 @@ async function syncMovimientosReimportCloud(db: any, output: string[], batchId: 
   }
 
   output.push(`Procesadas: ${snap.rows.length} | insertados ${inserted} | actualizados ${updated} | omitidos ${skipped.length}`);
+  for (const item of skipped) {
+    output.push(`Omitida fila ${item.rn}: ${item.reason}`);
+  }
   return { done: snap.rows.length < limit, nextOffset: offset + snap.rows.length };
 }
 
