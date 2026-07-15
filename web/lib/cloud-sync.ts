@@ -922,7 +922,7 @@ async function syncMovimientosReimportCloud(db: any, output: string[], batchId: 
   if (importedSnapshotIds.length > 0) {
     await db.query(
       `UPDATE external_transactions
-       SET raw_payload = raw_payload || jsonb_build_object('kw2_sync_imported_batch', $2)
+       SET raw_payload = raw_payload || jsonb_build_object('kw2_sync_imported_batch', $2::text)
        WHERE id = ANY($1::bigint[])`,
       [importedSnapshotIds, batchId],
     );
