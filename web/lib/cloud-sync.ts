@@ -385,60 +385,89 @@ async function importExternalSources(db: any, output: string[]) {
 }
 
 async function reconstructBsLinks(db: any, output: string[]) {
-  const fm = await db.query(
-    `SELECT (fm.source_payload->>'row_number')::int rn, (fm.source_payload->>'operacion')::numeric op, fm.id
-     FROM fund_movements fm JOIN accounts a ON a.id=fm.account_id
-     WHERE fm.source='google_sheet_movimientos' AND a.medium='bs'
-       AND NULLIF(fm.source_payload->>'operacion','') IS NOT NULL`,
-  );
-  const byRow = new Map<number, number>();
-  const byOp = new Map<number, number[]>();
-  for (const r of fm.rows) {
-    byRow.set(Number(r.rn), Number(r.id));
-    const op = Number(r.op);
-    (byOp.get(op) ?? byOp.set(op, []).get(op)!).push(Number(r.id));
-  }
-
-  const bank = await db.query(
-    `SELECT id, native_amount::float8 amt,
-            NULLIF(raw_payload->>'enlace_row','')::int enlace_row,
-            CASE WHEN (raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$'
-                 THEN (raw_payload->>'enlace_movimientos')::numeric END op
-     FROM external_transactions
-     WHERE source_type='bank_statement' AND source_account='EDO CTA BS'
-       AND ((raw_payload->>'enlace_row') ~ '^[0-9]+$' OR (raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$')`,
-  );
-
   await db.query(`DELETE FROM reconciliations WHERE reasons @> $1::jsonb`, [JSON.stringify([BS_LINK_REASON])]);
+  // La formula de EDO CTA BS enlaza filas por numero de fila de MOVIMIENTOS.
+  // Se resuelve todo en SQL para no hacer miles de viajes Vercel -> Supabase.
+  const linkedResult = await db.query(
+    `WITH movimientos_bs AS (
+       SELECT fm.id,
+              (fm.source_payload->>'row_number')::int AS row_number,
+              CASE WHEN (fm.source_payload->>'operacion') ~ '^[0-9]+(\\.[0-9]+)?$'
+                   THEN (fm.source_payload->>'operacion')::numeric END AS operacion
+       FROM fund_movements fm
+       JOIN accounts a ON a.id=fm.account_id
+       WHERE fm.source='google_sheet_movimientos'
+         AND a.medium='bs'
+         AND NULLIF(fm.source_payload->>'operacion','') IS NOT NULL
+     ), operaciones_unicas AS (
+       SELECT operacion, min(id) AS fund_movement_id
+       FROM movimientos_bs
+       WHERE operacion IS NOT NULL
+       GROUP BY operacion
+       HAVING count(*) = 1
+     ), banco AS (
+       SELECT et.id,
+              COALESCE(abs(et.native_amount), 0.01) AS amount,
+              CASE WHEN (et.raw_payload->>'enlace_row') ~ '^[0-9]+$'
+                   THEN (et.raw_payload->>'enlace_row')::int END AS enlace_row,
+              CASE WHEN (et.raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$'
+                   THEN (et.raw_payload->>'enlace_movimientos')::numeric END AS operacion
+       FROM external_transactions et
+       WHERE et.source_type='bank_statement'
+         AND et.source_account='EDO CTA BS'
+         AND ((et.raw_payload->>'enlace_row') ~ '^[0-9]+$'
+           OR (et.raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$')
+     ), candidatos AS (
+       SELECT b.id AS external_transaction_id,
+              b.amount,
+              COALESCE(por_fila.id, por_operacion.fund_movement_id) AS fund_movement_id
+       FROM banco b
+       LEFT JOIN movimientos_bs por_fila ON por_fila.row_number=b.enlace_row
+       LEFT JOIN operaciones_unicas por_operacion
+         ON por_fila.id IS NULL AND por_operacion.operacion=b.operacion
+     )
+     INSERT INTO reconciliations
+       (fund_movement_id, external_transaction_id, allocated_native_amount, status, confidence, reasons, confirmed_by, confirmed_at)
+     SELECT fund_movement_id, external_transaction_id, amount, 'confirmed', 1.0, $1::jsonb, 'sheet', now()
+     FROM candidatos
+     WHERE fund_movement_id IS NOT NULL
+     ON CONFLICT (fund_movement_id, external_transaction_id) DO NOTHING
+     RETURNING fund_movement_id`,
+    [JSON.stringify([BS_LINK_REASON])],
+  );
+  const linked = linkedResult.rowCount ?? 0;
+  const movementsReconciled = new Set(linkedResult.rows.map((row: any) => Number(row.fund_movement_id))).size;
 
-  let linked = 0;
-  const skipped = { sin_match: 0, ambiguo: 0 };
-  const fmReconciled = new Set<number>();
-  for (const b of bank.rows) {
-    let fmId: number | undefined = b.enlace_row != null ? byRow.get(Number(b.enlace_row)) : undefined;
-    if (fmId == null && b.op != null) {
-      const ids = byOp.get(Number(b.op));
-      if (ids && ids.length === 1) fmId = ids[0];
-      else if (ids && ids.length > 1) {
-        skipped.ambiguo++;
-        continue;
-      }
-    }
-    if (fmId == null) {
-      skipped.sin_match++;
-      continue;
-    }
-    const res = await db.query(
-      `INSERT INTO reconciliations (fund_movement_id, external_transaction_id, allocated_native_amount, status, confidence, reasons, confirmed_by, confirmed_at)
-       VALUES ($1,$2,$3,'confirmed',1.0,$4,'sheet',now())
-       ON CONFLICT (fund_movement_id, external_transaction_id) DO NOTHING`,
-      [fmId, b.id, Math.abs(Number(b.amt)) || 0.01, JSON.stringify([BS_LINK_REASON])],
-    );
-    if (res.rowCount) {
-      linked++;
-      fmReconciled.add(fmId);
-    }
-  }
+  const skipped = (await db.query(
+    `WITH movimientos_bs AS (
+       SELECT (fm.source_payload->>'row_number')::int AS row_number,
+              CASE WHEN (fm.source_payload->>'operacion') ~ '^[0-9]+(\\.[0-9]+)?$'
+                   THEN (fm.source_payload->>'operacion')::numeric END AS operacion
+       FROM fund_movements fm JOIN accounts a ON a.id=fm.account_id
+       WHERE fm.source='google_sheet_movimientos' AND a.medium='bs'
+         AND NULLIF(fm.source_payload->>'operacion','') IS NOT NULL
+     ), banco AS (
+       SELECT CASE WHEN (et.raw_payload->>'enlace_row') ~ '^[0-9]+$'
+                     THEN (et.raw_payload->>'enlace_row')::int END AS enlace_row,
+              CASE WHEN (et.raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$'
+                     THEN (et.raw_payload->>'enlace_movimientos')::numeric END AS operacion
+       FROM external_transactions et
+       WHERE et.source_type='bank_statement' AND et.source_account='EDO CTA BS'
+         AND ((et.raw_payload->>'enlace_row') ~ '^[0-9]+$'
+           OR (et.raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$')
+     )
+     SELECT
+       count(*) FILTER (
+         WHERE NOT EXISTS (SELECT 1 FROM movimientos_bs m WHERE m.row_number=b.enlace_row)
+           AND (b.operacion IS NULL OR (SELECT count(*) FROM movimientos_bs m WHERE m.operacion=b.operacion) = 0)
+       )::int AS sin_match,
+       count(*) FILTER (
+         WHERE NOT EXISTS (SELECT 1 FROM movimientos_bs m WHERE m.row_number=b.enlace_row)
+           AND b.operacion IS NOT NULL
+           AND (SELECT count(*) FROM movimientos_bs m WHERE m.operacion=b.operacion) > 1
+       )::int AS ambiguo
+     FROM banco b`,
+  )).rows[0];
 
   await db.query(
     `UPDATE fund_movements fm SET status='reconciled', updated_at=now()
@@ -456,7 +485,7 @@ async function reconstructBsLinks(db: any, output: string[]) {
   await db.query(
     `INSERT INTO audit_events (actor_type, actor_id, action, entity_type, entity_id, after_state)
      VALUES ('importer','sync-google-sheet','reconstruct_bs_reconciliations','account','EDO CTA BS',$1)`,
-    [JSON.stringify({ linked, movimientos_conciliados: fmReconciled.size, skipped })],
+    [JSON.stringify({ linked, movimientos_conciliados: movementsReconciled, skipped })],
   );
 
   const resumen = (await db.query(
@@ -469,7 +498,7 @@ async function reconstructBsLinks(db: any, output: string[]) {
   )).rows[0];
 
   output.push('== Conciliacion Bs desde enlaces del Sheet ==');
-  output.push(`Enlaces reconstruidos: ${linked} | movimientos conciliados: ${fmReconciled.size}`);
+  output.push(`Enlaces reconstruidos: ${linked} | movimientos conciliados: ${movementsReconciled}`);
   output.push(`Omitidos: sin match ${skipped.sin_match}, ambiguos ${skipped.ambiguo}`);
   output.push(`Estado Bs: conciliados ${resumen.conciliados} | pendientes ${resumen.pendientes_con_op} | no aplica ${resumen.sin_operacion_no_aplica}`);
 }
