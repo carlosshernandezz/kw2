@@ -16,11 +16,27 @@ export default function SyncButton() {
     chunks.push(`\n## ${label}`);
     setOutput(chunks.join('\n').trim());
 
-    const r = await fetch('/api/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phase, ...extraBody }),
-    });
+    let r: Response | undefined;
+    let lastNetworkError: unknown;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        r = await fetch('/api/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phase, ...extraBody }),
+        });
+        break;
+      } catch (error) {
+        lastNetworkError = error;
+        if (attempt === 2) break;
+        chunks.push(`Conexion interrumpida en ${label}; reintentando una vez...`);
+        setOutput(chunks.join('\n').trim());
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    }
+    if (!r) {
+      throw new Error(`No se pudo recibir respuesta durante "${label}": ${String(lastNetworkError)}`);
+    }
     const text = await r.text();
     let d: { ok?: boolean; output?: string; done?: boolean; nextOffset?: number; batchId?: string; totalRows?: number };
     try {
@@ -75,7 +91,7 @@ export default function SyncButton() {
     } catch (e) {
       if (e instanceof Error && e.message === '__KW2_SYNC_STOP__') return;
       setOk(false);
-      setOutput(String(e));
+      setOutput((previous) => `${previous ?? ''}\n\nError: ${String(e)}`.trim());
     } finally {
       setBusy(false);
     }

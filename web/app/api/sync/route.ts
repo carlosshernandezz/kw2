@@ -5,6 +5,7 @@ import path from 'node:path';
 import { syncGoogleSheetCloud, type CloudSyncPhase } from '@/lib/cloud-sync';
 
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
 export const maxDuration = 300;
 
 const CLOUD_PHASES = new Set<CloudSyncPhase>([

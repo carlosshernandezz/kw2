@@ -900,23 +900,32 @@ async function syncMovimientosReimportCloud(db: any, output: string[], batchId: 
 
   let inserted = 0;
   let updated = 0;
-  const importedSnapshotIds: number[] = [];
-  for (const r of rows) {
+  const importedSnapshotIds = rows.map((row) => row.snapshotId);
+  if (rows.length > 0) {
+    const values: unknown[] = [];
+    const tuples = rows.map((row, index) => {
+      const base = index * 13;
+      values.push(
+        row.kw2, row.accountId, row.clientId, row.direction, row.medium, row.currency,
+        row.native, row.usd, row.rate, row.date, row.sender, SOURCE, JSON.stringify(row.payload),
+      );
+      return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},($${base + 10}::date)::timestamptz,$${base + 11},$${base + 12},$${base + 13})`;
+    });
     const res = await db.query(
       `INSERT INTO fund_movements
          (kw2_id, account_id, client_id, direction, medium, native_currency, native_amount,
           usd_amount, exchange_rate, effective_at, sender_or_recipient, source, source_payload)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,($10::date)::timestamptz,$11,$12,$13)
+       VALUES ${tuples.join(', ')}
        ON CONFLICT (kw2_id) WHERE kw2_id IS NOT NULL DO UPDATE SET
          account_id=EXCLUDED.account_id, client_id=EXCLUDED.client_id, direction=EXCLUDED.direction,
          medium=EXCLUDED.medium, native_currency=EXCLUDED.native_currency, native_amount=EXCLUDED.native_amount,
          usd_amount=EXCLUDED.usd_amount, exchange_rate=EXCLUDED.exchange_rate, effective_at=EXCLUDED.effective_at,
          sender_or_recipient=EXCLUDED.sender_or_recipient, source_payload=EXCLUDED.source_payload, updated_at=now()
        RETURNING (xmax = 0) AS inserted`,
-      [r.kw2, r.accountId, r.clientId, r.direction, r.medium, r.currency, r.native, r.usd, r.rate, r.date, r.sender, SOURCE, JSON.stringify(r.payload)],
+      values,
     );
-    res.rows[0].inserted ? inserted++ : updated++;
-    importedSnapshotIds.push(r.snapshotId);
+    inserted = res.rows.filter((row: any) => row.inserted).length;
+    updated = (res.rowCount ?? 0) - inserted;
   }
 
   if (importedSnapshotIds.length > 0) {
