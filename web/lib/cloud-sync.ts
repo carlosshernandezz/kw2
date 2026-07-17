@@ -440,12 +440,18 @@ async function reconstructBsLinks(db: any, output: string[]) {
 
   const skipped = (await db.query(
     `WITH movimientos_bs AS (
-       SELECT (fm.source_payload->>'row_number')::int AS row_number,
+       SELECT fm.id,
+              (fm.source_payload->>'row_number')::int AS row_number,
               CASE WHEN (fm.source_payload->>'operacion') ~ '^[0-9]+(\\.[0-9]+)?$'
                    THEN (fm.source_payload->>'operacion')::numeric END AS operacion
        FROM fund_movements fm JOIN accounts a ON a.id=fm.account_id
        WHERE fm.source='google_sheet_movimientos' AND a.medium='bs'
          AND NULLIF(fm.source_payload->>'operacion','') IS NOT NULL
+     ), operaciones AS (
+       SELECT operacion, count(*)::int AS candidatos
+       FROM movimientos_bs
+       WHERE operacion IS NOT NULL
+       GROUP BY operacion
      ), banco AS (
        SELECT CASE WHEN (et.raw_payload->>'enlace_row') ~ '^[0-9]+$'
                      THEN (et.raw_payload->>'enlace_row')::int END AS enlace_row,
@@ -455,18 +461,17 @@ async function reconstructBsLinks(db: any, output: string[]) {
        WHERE et.source_type='bank_statement' AND et.source_account='EDO CTA BS'
          AND ((et.raw_payload->>'enlace_row') ~ '^[0-9]+$'
            OR (et.raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$')
+     ), clasificados AS (
+       SELECT por_fila.id IS NOT NULL AS tiene_fila,
+              COALESCE(por_operacion.candidatos, 0) AS candidatos_operacion
+       FROM banco b
+       LEFT JOIN movimientos_bs por_fila ON por_fila.row_number=b.enlace_row
+       LEFT JOIN operaciones por_operacion ON por_operacion.operacion=b.operacion
      )
      SELECT
-       count(*) FILTER (
-         WHERE NOT EXISTS (SELECT 1 FROM movimientos_bs m WHERE m.row_number=b.enlace_row)
-           AND (b.operacion IS NULL OR (SELECT count(*) FROM movimientos_bs m WHERE m.operacion=b.operacion) = 0)
-       )::int AS sin_match,
-       count(*) FILTER (
-         WHERE NOT EXISTS (SELECT 1 FROM movimientos_bs m WHERE m.row_number=b.enlace_row)
-           AND b.operacion IS NOT NULL
-           AND (SELECT count(*) FROM movimientos_bs m WHERE m.operacion=b.operacion) > 1
-       )::int AS ambiguo
-     FROM banco b`,
+       count(*) FILTER (WHERE NOT tiene_fila AND candidatos_operacion = 0)::int AS sin_match,
+       count(*) FILTER (WHERE NOT tiene_fila AND candidatos_operacion > 1)::int AS ambiguo
+     FROM clasificados`,
   )).rows[0];
 
   await db.query(
