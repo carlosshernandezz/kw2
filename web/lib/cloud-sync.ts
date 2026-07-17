@@ -407,7 +407,7 @@ async function reconstructBsLinks(db: any, output: string[]) {
        HAVING count(*) = 1
      ), banco AS (
        SELECT et.id,
-              COALESCE(abs(et.native_amount), 0.01) AS amount,
+              abs(et.native_amount) AS amount,
               CASE WHEN (et.raw_payload->>'enlace_row') ~ '^[0-9]+$'
                    THEN (et.raw_payload->>'enlace_row')::int END AS enlace_row,
               CASE WHEN (et.raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$'
@@ -415,6 +415,7 @@ async function reconstructBsLinks(db: any, output: string[]) {
        FROM external_transactions et
        WHERE et.source_type='bank_statement'
          AND et.source_account='EDO CTA BS'
+         AND COALESCE(abs(et.native_amount), 0) > 0
          AND ((et.raw_payload->>'enlace_row') ~ '^[0-9]+$'
            OR (et.raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$')
      ), candidatos AS (
@@ -453,7 +454,8 @@ async function reconstructBsLinks(db: any, output: string[]) {
        WHERE operacion IS NOT NULL
        GROUP BY operacion
      ), banco AS (
-       SELECT CASE WHEN (et.raw_payload->>'enlace_row') ~ '^[0-9]+$'
+       SELECT COALESCE(abs(et.native_amount), 0) AS amount,
+              CASE WHEN (et.raw_payload->>'enlace_row') ~ '^[0-9]+$'
                      THEN (et.raw_payload->>'enlace_row')::int END AS enlace_row,
               CASE WHEN (et.raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$'
                      THEN (et.raw_payload->>'enlace_movimientos')::numeric END AS operacion
@@ -462,15 +464,17 @@ async function reconstructBsLinks(db: any, output: string[]) {
          AND ((et.raw_payload->>'enlace_row') ~ '^[0-9]+$'
            OR (et.raw_payload->>'enlace_movimientos') ~ '^[0-9]+(\\.[0-9]+)?$')
      ), clasificados AS (
-       SELECT por_fila.id IS NOT NULL AS tiene_fila,
+       SELECT b.amount,
+              por_fila.id IS NOT NULL AS tiene_fila,
               COALESCE(por_operacion.candidatos, 0) AS candidatos_operacion
        FROM banco b
        LEFT JOIN movimientos_bs por_fila ON por_fila.row_number=b.enlace_row
        LEFT JOIN operaciones por_operacion ON por_operacion.operacion=b.operacion
      )
      SELECT
-       count(*) FILTER (WHERE NOT tiene_fila AND candidatos_operacion = 0)::int AS sin_match,
-       count(*) FILTER (WHERE NOT tiene_fila AND candidatos_operacion > 1)::int AS ambiguo
+       count(*) FILTER (WHERE amount <= 0)::int AS sin_monto,
+       count(*) FILTER (WHERE amount > 0 AND NOT tiene_fila AND candidatos_operacion = 0)::int AS sin_match,
+       count(*) FILTER (WHERE amount > 0 AND NOT tiene_fila AND candidatos_operacion > 1)::int AS ambiguo
      FROM clasificados`,
   )).rows[0];
 
@@ -504,7 +508,7 @@ async function reconstructBsLinks(db: any, output: string[]) {
 
   output.push('== Conciliacion Bs desde enlaces del Sheet ==');
   output.push(`Enlaces reconstruidos: ${linked} | movimientos conciliados: ${movementsReconciled}`);
-  output.push(`Omitidos: sin match ${skipped.sin_match}, ambiguos ${skipped.ambiguo}`);
+  output.push(`Omitidos: sin monto ${skipped.sin_monto}, sin match ${skipped.sin_match}, ambiguos ${skipped.ambiguo}`);
   output.push(`Estado Bs: conciliados ${resumen.conciliados} | pendientes ${resumen.pendientes_con_op} | no aplica ${resumen.sin_operacion_no_aplica}`);
 }
 
